@@ -185,6 +185,10 @@ public class SparkTable extends BaseSparkTable
   @Override
   public WriteBuilder newWriteBuilder(LogicalWriteInfo info) {
     Preconditions.checkArgument(timeTravel == null, "Cannot write to table with time travel");
+    if (info.options().getBoolean(SparkWriteBuilder.REAL_TIME_MODE_ENABLED, false)) {
+      return SparkWriteBuilder.forRealTimeMode(spark(), table(), branch, info);
+    }
+
     return new SparkWriteBuilder(spark(), table(), branch, info);
   }
 

@@ -636,9 +636,15 @@ abstract class SparkWrite extends BaseSparkWrite implements Write, RequiresDistr
 
     @Override
     protected void doCommit(long epochId, WriterCommitMessage[] messages) {
+      DataFileSet files = files(messages);
+      if (files.isEmpty()) {
+        LOG.debug("Streaming append for epoch {} is empty, skipping commit", epochId);
+        return;
+      }
+
       AppendFiles append = useMergeAppendForStreaming ? table.newAppend() : table.newFastAppend();
       int numFiles = 0;
-      for (DataFile file : files(messages)) {
+      for (DataFile file : files) {
         append.appendFile(file);
         numFiles++;
       }

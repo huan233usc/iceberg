@@ -49,10 +49,13 @@ import org.apache.spark.sql.connector.write.SupportsOverwriteV2;
 import org.apache.spark.sql.connector.write.Write;
 import org.apache.spark.sql.connector.write.WriteBuilder;
 import org.apache.spark.sql.connector.write.streaming.StreamingWrite;
+import org.apache.spark.sql.internal.connector.SupportsStreamingUpdateAsAppend;
 import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 
 class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, SupportsOverwriteV2 {
+  static final String REAL_TIME_MODE_ENABLED = "real-time-mode-enabled";
+
   private final SparkSession spark;
   private final Table table;
   private final String branch;
@@ -75,6 +78,11 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
     this.checkOrdering = writeConf.checkOrdering();
     this.mergeSchema = writeConf.mergeSchema();
     SparkTableUtil.validateWriteBranch(spark, table, branch, info.options());
+  }
+
+  static SparkWriteBuilder forRealTimeMode(
+      SparkSession spark, Table table, String branch, LogicalWriteInfo info) {
+    return new RealTimeSparkWriteBuilder(spark, table, branch, info);
   }
 
   public WriteBuilder overwriteFiles(Scan scan, Command command, IsolationLevel isolationLevel) {
@@ -229,5 +237,15 @@ class SparkWriteBuilder implements WriteBuilder, SupportsDynamicOverwrite, Suppo
     record CopyOnWriteOperation(
         SparkCopyOnWriteScan scan, Command command, IsolationLevel isolationLevel)
         implements Mode {}
+  }
+
+  // Spark Real-Time Mode requires update output mode. For stateless RTM queries, update is
+  // equivalent to append, so opt in to Spark's update-as-append write path.
+  private static class RealTimeSparkWriteBuilder extends SparkWriteBuilder
+      implements SupportsStreamingUpdateAsAppend {
+    private RealTimeSparkWriteBuilder(
+        SparkSession spark, Table table, String branch, LogicalWriteInfo info) {
+      super(spark, table, branch, info);
+    }
   }
 }

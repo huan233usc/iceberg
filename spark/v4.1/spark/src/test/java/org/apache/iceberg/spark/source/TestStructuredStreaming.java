@@ -414,6 +414,43 @@ public class TestStructuredStreaming {
     }
   }
 
+  @Test
+  public void testStreamingWriteUpdateModeAsAppendWhenRealTimeEnabled() throws Exception {
+    File parent = temp.resolve("parquet").toFile();
+    File location = new File(parent, "test-table");
+    File checkpoint = new File(parent, "checkpoint");
+
+    HadoopTables tables = new HadoopTables(CONF);
+    tables.create(SCHEMA, PartitionSpec.unpartitioned(), location.toString());
+
+    MemoryStream<Integer> inputStream = newMemoryStream(1, spark, Encoders.INT());
+    DataStreamWriter<Row> streamWriter =
+        inputStream
+            .toDF()
+            .selectExpr("value AS id", "CAST (value AS STRING) AS data")
+            .writeStream()
+            .outputMode("update")
+            .format("iceberg")
+            .option("checkpointLocation", checkpoint.toString())
+            .option("path", location.toString())
+            .option(SparkWriteBuilder.REAL_TIME_MODE_ENABLED, "true");
+
+    try {
+      StreamingQuery query = streamWriter.start();
+      List<Integer> expected = Lists.newArrayList(1, 2);
+      send(expected, inputStream);
+      query.processAllAvailable();
+
+      Dataset<Row> result = spark.read().format("iceberg").load(location.toString());
+      assertThat(result.orderBy("id").select("id").as(Encoders.INT()).collectAsList())
+          .containsExactlyElementsOf(expected);
+    } finally {
+      for (StreamingQuery query : spark.streams().active()) {
+        query.stop();
+      }
+    }
+  }
+
   private <T> MemoryStream<T> newMemoryStream(
       int id, SparkSession sparkSession, Encoder<T> encoder) {
     return new MemoryStream<>(id, sparkSession, Option.empty(), encoder);
