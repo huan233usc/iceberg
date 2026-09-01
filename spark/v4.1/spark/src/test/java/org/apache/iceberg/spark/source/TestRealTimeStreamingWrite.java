@@ -106,7 +106,7 @@ class TestRealTimeStreamingWrite {
     File checkpoint = temp.resolve("checkpoint").toFile();
     Table table =
         new HadoopTables(CONF).create(SCHEMA, PartitionSpec.unpartitioned(), location.toString());
-    DataStreamWriter<Row> writer = newRealTimeWriter(topic, location, checkpoint);
+    DataStreamWriter<Row> writer = newRealTimeWriter(topic, location, checkpoint, false);
 
     StreamingQuery query = writer.start();
     try {
@@ -115,6 +115,9 @@ class TestRealTimeStreamingWrite {
 
       table.refresh();
       assertThat(table.snapshots()).as("one non-empty RTM epoch").hasSize(1);
+      long committedSnapshotId = table.currentSnapshot().snapshotId();
+      String committedQueryId =
+          table.currentSnapshot().summary().get("spark.sql.streaming.queryId");
       long committedEpochId =
           Long.parseLong(table.currentSnapshot().summary().get("spark.sql.streaming.epochId"));
 
@@ -131,6 +134,10 @@ class TestRealTimeStreamingWrite {
       awaitRows(location, 3L);
       table.refresh();
       assertThat(table.snapshots()).as("replayed epoch is not committed twice").hasSize(1);
+      assertThat(table.currentSnapshot().snapshotId()).isEqualTo(committedSnapshotId);
+      assertThat(table.currentSnapshot().summary())
+          .containsEntry("spark.sql.streaming.queryId", committedQueryId)
+          .containsEntry("spark.sql.streaming.epochId", Long.toString(committedEpochId));
     } finally {
       if (query.isActive()) {
         query.stop();
@@ -148,7 +155,7 @@ class TestRealTimeStreamingWrite {
     Table table =
         new HadoopTables(CONF).create(SCHEMA, PartitionSpec.unpartitioned(), location.toString());
 
-    StreamingQuery query = newRealTimeWriter(topic, location, checkpoint).start();
+    StreamingQuery query = newRealTimeWriter(topic, location, checkpoint, false).start();
     try {
       await()
           .atMost(Duration.ofSeconds(30))
@@ -161,7 +168,32 @@ class TestRealTimeStreamingWrite {
     }
   }
 
-  private DataStreamWriter<Row> newRealTimeWriter(String topic, File location, File checkpoint) {
+  @Test
+  void kafkaRealTimeAppendUsesAsyncProgressTrackingByDefault() throws Exception {
+    String topic = "iceberg-rtm-async-" + UUID.randomUUID();
+    createTopic(topic);
+    send(topic, "1,a", "2,b", "3,c");
+
+    File location = temp.resolve("async-table").toFile();
+    File checkpoint = temp.resolve("async-checkpoint").toFile();
+    Table table =
+        new HadoopTables(CONF).create(SCHEMA, PartitionSpec.unpartitioned(), location.toString());
+
+    StreamingQuery query = newRealTimeWriter(topic, location, checkpoint, true).start();
+    try {
+      awaitRows(location, 3L);
+
+      table.refresh();
+      assertThat(table.snapshots()).as("one non-empty RTM epoch").hasSize(1);
+      assertThat(table.currentSnapshot().summary())
+          .containsKeys("spark.sql.streaming.queryId", "spark.sql.streaming.epochId");
+    } finally {
+      query.stop();
+    }
+  }
+
+  private DataStreamWriter<Row> newRealTimeWriter(
+      String topic, File location, File checkpoint, boolean asyncProgressTrackingEnabled) {
     Dataset<Row> input =
         spark
             .readStream()
@@ -173,15 +205,19 @@ class TestRealTimeStreamingWrite {
             .selectExpr("CAST(value AS STRING) AS value")
             .selectExpr("CAST(split(value, ',')[0] AS INT) AS id", "split(value, ',')[1] AS data");
 
-    return input
-        .writeStream()
-        .outputMode("update")
-        .format("iceberg")
-        .option("asyncProgressTrackingEnabled", "false")
-        .option("checkpointLocation", checkpoint.toString())
-        .option("path", location.toString())
-        .option(SparkWriteBuilder.REAL_TIME_MODE_ENABLED, "true")
-        .trigger(Trigger.RealTime(5_000L));
+    DataStreamWriter<Row> writer =
+        input
+            .writeStream()
+            .outputMode("update")
+            .format("iceberg")
+            .option("checkpointLocation", checkpoint.toString())
+            .option("path", location.toString())
+            .option(SparkWriteBuilder.REAL_TIME_MODE_ENABLED, "true");
+    if (!asyncProgressTrackingEnabled) {
+      writer.option("asyncProgressTrackingEnabled", "false");
+    }
+
+    return writer.trigger(Trigger.RealTime(5_000L));
   }
 
   private void awaitRows(File location, long expectedRows) {
