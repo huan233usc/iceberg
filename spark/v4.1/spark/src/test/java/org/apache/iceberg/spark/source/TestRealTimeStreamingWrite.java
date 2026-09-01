@@ -85,7 +85,7 @@ class TestRealTimeStreamingWrite {
   }
 
   @AfterAll
-  static void stopSpark() {
+  static void stopSpark() throws Exception {
     if (spark != null) {
       for (StreamingQuery query : spark.streams().active()) {
         query.stop();
