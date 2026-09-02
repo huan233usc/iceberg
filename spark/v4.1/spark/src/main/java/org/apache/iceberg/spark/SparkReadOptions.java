@@ -71,6 +71,9 @@ public class SparkReadOptions {
       "streaming-skip-overwrite-snapshots";
   public static final boolean STREAMING_SKIP_OVERWRITE_SNAPSHOTS_DEFAULT = false;
 
+  // Number of stable reader shards used by Real-Time Mode
+  public static final String STREAMING_REAL_TIME_SHARDS = "streaming-real-time-shards";
+
   // Controls whether to report locality information to Spark while allocating input partitions
   public static final String LOCALITY = "locality";
 

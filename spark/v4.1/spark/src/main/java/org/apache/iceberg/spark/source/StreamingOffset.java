@@ -22,6 +22,7 @@ import com.fasterxml.jackson.core.JsonGenerator;
 import com.fasterxml.jackson.databind.JsonNode;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.Serializable;
 import java.io.StringWriter;
 import java.io.UncheckedIOException;
 import java.util.Locale;
@@ -30,7 +31,7 @@ import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.util.JsonUtil;
 import org.apache.spark.sql.connector.read.streaming.Offset;
 
-class StreamingOffset extends Offset {
+class StreamingOffset extends Offset implements Serializable {
   static final StreamingOffset START_OFFSET = new StreamingOffset(-1L, -1, false);
 
   private static final int CURR_VERSION = 1;

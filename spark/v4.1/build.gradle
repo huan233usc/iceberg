@@ -94,6 +94,9 @@ project(":iceberg-spark:iceberg-spark-${sparkMajorVersion}_${scalaVersion}") {
 
     implementation libs.caffeine
 
+    testImplementation("org.apache.spark:spark-sql-kafka-0-10_${scalaVersion}:${libs.versions.spark41.get()}")
+    testImplementation libs.testcontainers.junit.jupiter
+    testImplementation libs.testcontainers.kafka
     testImplementation(libs.hadoop3.minicluster) {
       exclude group: 'org.apache.avro', module: 'avro'
       // to make sure netty libs only come from project(':iceberg-arrow')

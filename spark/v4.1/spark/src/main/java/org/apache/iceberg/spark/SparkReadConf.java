@@ -107,6 +107,18 @@ public class SparkReadConf {
         .parse();
   }
 
+  public int streamingRealTimeShards() {
+    int numShards =
+        confParser
+            .intConf()
+            .option(SparkReadOptions.STREAMING_REAL_TIME_SHARDS)
+            .defaultValue(spark.sparkContext().defaultParallelism())
+            .parse();
+    Preconditions.checkArgument(
+        numShards > 0, "Real-time streaming reader shards must be positive: %s", numShards);
+    return numShards;
+  }
+
   public boolean parquetVectorizationEnabled() {
     return confParser
         .booleanConf()
