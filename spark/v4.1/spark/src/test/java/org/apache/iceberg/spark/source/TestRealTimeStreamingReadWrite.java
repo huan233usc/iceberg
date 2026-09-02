@@ -33,7 +33,6 @@ import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.hadoop.HadoopTables;
-import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.spark.SparkReadOptions;
 import org.apache.iceberg.spark.TestBase;
@@ -150,17 +149,14 @@ class TestRealTimeStreamingReadWrite {
       awaitRows(destinationLocation, 1L);
 
       source.refresh();
-      DataFile dataFile;
-      try (CloseableIterable<DataFile> addedFiles =
-          source.currentSnapshot().addedDataFiles(source.io())) {
-        dataFile = Iterables.getOnlyElement(addedFiles);
-      }
+      DataFile dataFile =
+          Iterables.getOnlyElement(source.currentSnapshot().addedDataFiles(source.io()));
 
       source.newDelete().deleteFile(dataFile).commit();
 
       await()
           .atMost(Duration.ofSeconds(45))
-          .untilAsserted(() -> assertThat(query.exception()).isNotEmpty());
+          .untilAsserted(() -> assertThat(query.exception().isDefined()).isTrue());
       assertThat(query.exception().get()).hasStackTraceContaining("Cannot process delete snapshot");
     } finally {
       if (query.isActive()) {
@@ -188,7 +184,7 @@ class TestRealTimeStreamingReadWrite {
 
       await()
           .atMost(Duration.ofSeconds(45))
-          .untilAsserted(() -> assertThat(query.exception()).isNotEmpty());
+          .untilAsserted(() -> assertThat(query.exception().isDefined()).isTrue());
       assertThat(query.exception().get())
           .hasStackTraceContaining("Cannot process overwrite snapshot");
     } finally {
@@ -232,7 +228,7 @@ class TestRealTimeStreamingReadWrite {
     try {
       await()
           .atMost(Duration.ofSeconds(45))
-          .untilAsserted(() -> assertThat(restarted.exception()).isNotEmpty());
+          .untilAsserted(() -> assertThat(restarted.exception().isDefined()).isTrue());
       assertThat(restarted.exception().get())
           .hasStackTraceContaining("Cannot load current offset at snapshot " + expiredSnapshotId);
       awaitRows(destinationLocation, 1L);
