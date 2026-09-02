@@ -26,13 +26,16 @@ import java.net.InetAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Properties;
+import java.util.Set;
 import java.util.UUID;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
+import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.hadoop.HadoopTables;
 import org.apache.iceberg.spark.SparkReadOptions;
@@ -274,7 +277,14 @@ class TestRealTimeStreamingWrite {
       awaitRows(location, 6L);
 
       table.refresh();
-      assertThat(table.snapshots()).as("one commit from each RTM query").hasSize(2);
+      Set<String> committedQueryIds = new HashSet<>();
+      for (Snapshot snapshot : table.snapshots()) {
+        committedQueryIds.add(snapshot.summary().get("spark.sql.streaming.queryId"));
+      }
+
+      assertThat(committedQueryIds)
+          .as("both RTM queries committed")
+          .containsExactlyInAnyOrder(first.id().toString(), second.id().toString());
       assertThat(
               spark.read().format("iceberg").load(location.toString()).select("id").collectAsList())
           .extracting(row -> row.getInt(0))
