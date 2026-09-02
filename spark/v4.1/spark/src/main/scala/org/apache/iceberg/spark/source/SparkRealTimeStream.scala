@@ -18,21 +18,26 @@
  */
 package org.apache.iceberg.spark.source
 
-import org.apache.iceberg.{BaseCombinedScanTask, FileScanTask, Table}
+import org.apache.iceberg.BaseCombinedScanTask
+import org.apache.iceberg.FileScanTask
+import org.apache.iceberg.Table
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions
 import org.apache.iceberg.spark.SparkReadConf
 import org.apache.iceberg.types.Types
-import org.apache.spark.{SparkEnv, TaskContext}
+import org.apache.spark.SparkEnv
+import org.apache.spark.TaskContext
 import org.apache.spark.broadcast.Broadcast
-import org.apache.spark.rpc.{
-  RpcAddress,
-  RpcEndpointRef,
-  RpcEnv,
-  ThreadSafeRpcEndpoint
-}
+import org.apache.spark.rpc.RpcAddress
+import org.apache.spark.rpc.RpcCallContext
+import org.apache.spark.rpc.RpcEndpointRef
+import org.apache.spark.rpc.RpcEnv
+import org.apache.spark.rpc.ThreadSafeRpcEndpoint
 import org.apache.spark.sql.catalyst.InternalRow
-import org.apache.spark.sql.connector.read.{InputPartition, PartitionReader, PartitionReaderFactory}
-import org.apache.spark.sql.connector.read.streaming.{ReadLimit, SupportsRealTimeRead}
+import org.apache.spark.sql.connector.read.InputPartition
+import org.apache.spark.sql.connector.read.PartitionReader
+import org.apache.spark.sql.connector.read.PartitionReaderFactory
+import org.apache.spark.sql.connector.read.streaming.ReadLimit
+import org.apache.spark.sql.connector.read.streaming.SupportsRealTimeRead
 import org.apache.spark.sql.connector.read.streaming.SupportsRealTimeRead.RecordStatus
 import org.apache.spark.util.RpcUtils
 
@@ -53,7 +58,7 @@ private[source] class IcebergRealTimeCoordinator(
 
   private val planner = new SyncSparkMicroBatchPlanner(table, readConf, null)
 
-  override def receiveAndReply(context: org.apache.spark.rpc.RpcCallContext)
+  override def receiveAndReply(context: RpcCallContext)
       : PartialFunction[Any, Unit] = {
     case request: NextRealTimeTask =>
       context.reply(nextTask(request))
@@ -123,6 +128,9 @@ private[source] class SparkRealTimeReaderFactory extends PartitionReaderFactory 
 private[source] class SparkRealTimePartitionReader(partition: SparkRealTimeInputPartition)
     extends SupportsRealTimeRead[InternalRow] {
 
+  private val NanosecondsPerMillisecond = 1000000L
+  private val PollIntervalMs = 50L
+
   private val endpoint: RpcEndpointRef = RpcUtils.makeDriverRef(
     partition.endpointName,
     partition.endpointAddress.host,
@@ -167,10 +175,11 @@ private[source] class SparkRealTimePartitionReader(partition: SparkRealTimeInput
             return RecordStatus.newStatusWithoutArrivalTime(false)
           }
 
-          Thread.sleep(Math.min(50L, remainingMs))
+          Thread.sleep(Math.min(PollIntervalMs, remainingMs))
       }
 
-      remainingMs = timeoutMs.longValue() - (System.nanoTime() - startNanos) / 1000000L
+      remainingMs =
+        timeoutMs.longValue() - (System.nanoTime() - startNanos) / NanosecondsPerMillisecond
     }
 
     RecordStatus.newStatusWithoutArrivalTime(false)
