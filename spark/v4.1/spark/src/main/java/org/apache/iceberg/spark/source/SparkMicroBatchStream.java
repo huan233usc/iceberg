@@ -89,6 +89,8 @@ public class SparkMicroBatchStream
   private SparkMicroBatchPlanner planner;
   private StreamingOffset lastOffsetForTriggerAvailableNow;
   private RpcEndpointRef realTimeEndpointRef;
+  private RealTimeOffset realTimeEndpointStartOffset;
+  private InputPartition[] realTimeInputPartitions;
 
   SparkMicroBatchStream(
       JavaSparkContext sparkContext,
@@ -198,6 +200,10 @@ public class SparkMicroBatchStream
       startOffset = RealTimeOffset.initial((StreamingOffset) start, realTimeShards);
     }
 
+    if (realTimeEndpointRef != null && startOffset.equals(realTimeEndpointStartOffset)) {
+      return realTimeInputPartitions.clone();
+    }
+
     stopRealTimeEndpoint();
 
     String endpointName = "IcebergRealTimeEndpoint-" + UUID.randomUUID();
@@ -222,7 +228,9 @@ public class SparkMicroBatchStream
               cacheDeleteFilesOnExecutors);
     }
 
-    return partitions;
+    this.realTimeEndpointStartOffset = startOffset;
+    this.realTimeInputPartitions = partitions;
+    return partitions.clone();
   }
 
   @Override
@@ -282,6 +290,9 @@ public class SparkMicroBatchStream
       SparkEnv.get().rpcEnv().stop(realTimeEndpointRef);
       realTimeEndpointRef = null;
     }
+
+    this.realTimeEndpointStartOffset = null;
+    this.realTimeInputPartitions = null;
   }
 
   private void initializePlanner(StreamingOffset startOffset, StreamingOffset endOffset) {

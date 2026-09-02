@@ -280,25 +280,7 @@ class TestRealTimeStreamingWrite {
       StructType inputSchema = input.schema();
       input =
           input.mapPartitions(
-              (MapPartitionsFunction<Row, Row>)
-                  rows ->
-                      new Iterator<>() {
-                        @Override
-                        public boolean hasNext() {
-                          boolean hasNext = rows.hasNext();
-                          if (!hasNext && TaskContext.get().attemptNumber() == 0) {
-                            throw new IllegalStateException(
-                                "Injected failure after writing task rows");
-                          }
-
-                          return hasNext;
-                        }
-
-                        @Override
-                        public Row next() {
-                          return rows.next();
-                        }
-                      },
+              (MapPartitionsFunction<Row, Row>) FailFirstTaskAttemptIterator::new,
               RowEncoder.encoderFor(inputSchema));
     }
 
@@ -376,5 +358,28 @@ class TestRealTimeStreamingWrite {
 
   private long commitId(File commit) {
     return Long.parseLong(commit.getName());
+  }
+
+  private static class FailFirstTaskAttemptIterator implements Iterator<Row> {
+    private final Iterator<Row> rows;
+
+    private FailFirstTaskAttemptIterator(Iterator<Row> rows) {
+      this.rows = rows;
+    }
+
+    @Override
+    public boolean hasNext() {
+      boolean hasNext = rows.hasNext();
+      if (!hasNext && TaskContext.get().attemptNumber() == 0) {
+        throw new IllegalStateException("Injected failure after writing task rows");
+      }
+
+      return hasNext;
+    }
+
+    @Override
+    public Row next() {
+      return rows.next();
+    }
   }
 }
