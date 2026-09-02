@@ -41,9 +41,7 @@ import org.apache.spark.sql.connector.read.streaming.SupportsRealTimeRead
 import org.apache.spark.sql.connector.read.streaming.SupportsRealTimeRead.RecordStatus
 import org.apache.spark.util.RpcUtils
 
-private[source] case class NextRealTimeTask(
-    shardId: Int,
-    offset: StreamingOffset)
+private[source] case class NextRealTimeTask(shardId: Int, offset: StreamingOffset)
 
 private[source] case class RealTimeTaskResponse(
     task: Option[FileScanTask],
@@ -58,8 +56,7 @@ private[source] class IcebergRealTimeCoordinator(
 
   private val planner = new SyncSparkMicroBatchPlanner(table, readConf, null)
 
-  override def receiveAndReply(context: RpcCallContext)
-      : PartialFunction[Any, Unit] = {
+  override def receiveAndReply(context: RpcCallContext): PartialFunction[Any, Unit] = {
     case request: NextRealTimeTask =>
       context.reply(nextTask(request))
   }
@@ -162,8 +159,8 @@ private[source] class SparkRealTimePartitionReader(partition: SparkRealTimeInput
         currentOffset = nextOffset
       }
 
-      val response = endpoint.askSync[RealTimeTaskResponse](
-        NextRealTimeTask(partition.shardId, currentOffset))
+      val response =
+        endpoint.askSync[RealTimeTaskResponse](NextRealTimeTask(partition.shardId, currentOffset))
       response.task match {
         case Some(task) =>
           currentReader = new RowDataReader(inputPartition(task))
