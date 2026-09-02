@@ -95,7 +95,7 @@ class IcebergRealTimeCoordinator implements ThreadSafeRpcEndpoint {
     StreamingOffset currentOffset = request.offset();
     while (true) {
       StreamingOffset nextOffset = planner.latestOffset(currentOffset, ReadLimit.maxFiles(1));
-      if (nextOffset == null) {
+      if (nextOffset == null || nextOffset.equals(currentOffset)) {
         return new RealTimeTaskResponse(null, currentOffset);
       }
 
