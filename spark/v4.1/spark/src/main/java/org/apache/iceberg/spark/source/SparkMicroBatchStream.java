@@ -25,7 +25,10 @@ import java.io.OutputStream;
 import java.io.OutputStreamWriter;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 import java.util.function.Supplier;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.iceberg.CombinedScanTask;
@@ -45,18 +48,23 @@ import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.spark.SparkReadConf;
 import org.apache.iceberg.types.Types;
 import org.apache.iceberg.util.TableScanUtil;
+import org.apache.spark.SparkEnv;
 import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.broadcast.Broadcast;
+import org.apache.spark.rpc.RpcEndpointRef;
 import org.apache.spark.sql.connector.read.InputPartition;
 import org.apache.spark.sql.connector.read.PartitionReaderFactory;
 import org.apache.spark.sql.connector.read.streaming.MicroBatchStream;
 import org.apache.spark.sql.connector.read.streaming.Offset;
+import org.apache.spark.sql.connector.read.streaming.PartitionOffset;
 import org.apache.spark.sql.connector.read.streaming.ReadLimit;
+import org.apache.spark.sql.connector.read.streaming.SupportsRealTimeMode;
 import org.apache.spark.sql.connector.read.streaming.SupportsTriggerAvailableNow;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-public class SparkMicroBatchStream implements MicroBatchStream, SupportsTriggerAvailableNow {
+public class SparkMicroBatchStream
+    implements MicroBatchStream, SupportsTriggerAvailableNow, SupportsRealTimeMode {
   private static final Joiner SLASH = Joiner.on("/");
   private static final Logger LOG = LoggerFactory.getLogger(SparkMicroBatchStream.class);
   private static final Types.StructType EMPTY_GROUPING_KEY_TYPE = Types.StructType.of();
@@ -77,8 +85,10 @@ public class SparkMicroBatchStream implements MicroBatchStream, SupportsTriggerA
   private final int maxFilesPerMicroBatch;
   private final int maxRecordsPerMicroBatch;
   private final boolean cacheDeleteFilesOnExecutors;
+  private final int realTimeShards;
   private SparkMicroBatchPlanner planner;
   private StreamingOffset lastOffsetForTriggerAvailableNow;
+  private RpcEndpointRef realTimeEndpointRef;
 
   SparkMicroBatchStream(
       JavaSparkContext sparkContext,
@@ -102,6 +112,7 @@ public class SparkMicroBatchStream implements MicroBatchStream, SupportsTriggerA
     this.maxFilesPerMicroBatch = readConf.maxFilesPerMicroBatch();
     this.maxRecordsPerMicroBatch = readConf.maxRecordsPerMicroBatch();
     this.cacheDeleteFilesOnExecutors = readConf.cacheDeleteFilesOnExecutors();
+    this.realTimeShards = readConf.streamingRealTimeShards();
 
     InitialOffsetStore initialOffsetStore =
         new InitialOffsetStore(
@@ -174,6 +185,64 @@ public class SparkMicroBatchStream implements MicroBatchStream, SupportsTriggerA
     return partitions;
   }
 
+  @Override
+  public synchronized InputPartition[] planInputPartitions(Offset start) {
+    RealTimeOffset startOffset;
+    if (start instanceof RealTimeOffset) {
+      startOffset = (RealTimeOffset) start;
+    } else {
+      Preconditions.checkArgument(
+          start instanceof StreamingOffset,
+          "Invalid real-time start offset: %s",
+          start.getClass().getName());
+      startOffset = RealTimeOffset.initial((StreamingOffset) start, realTimeShards);
+    }
+
+    stopRealTimeEndpoint();
+
+    String endpointName = "IcebergRealTimeEndpoint-" + UUID.randomUUID();
+    IcebergRealTimeCoordinator coordinator =
+        new IcebergRealTimeCoordinator(
+            SparkEnv.get().rpcEnv(), table, readConf, startOffset.numShards());
+    this.realTimeEndpointRef = coordinator.rpcEnv().setupEndpoint(endpointName, coordinator);
+
+    InputPartition[] partitions = new InputPartition[startOffset.numShards()];
+    for (int shardId = 0; shardId < startOffset.numShards(); shardId++) {
+      partitions[shardId] =
+          new SparkRealTimeInputPartition(
+              endpointName,
+              realTimeEndpointRef.address(),
+              shardId,
+              startOffset.partitionOffset(shardId).streamingOffset(),
+              startOffset.numShards(),
+              tableBroadcast,
+              fileIOBroadcast,
+              projection,
+              caseSensitive,
+              cacheDeleteFilesOnExecutors);
+    }
+
+    return partitions;
+  }
+
+  @Override
+  public Offset mergeOffsets(PartitionOffset[] offsets) {
+    Map<Integer, RealTimePartitionOffset> mergedOffsets = new HashMap<>();
+    for (PartitionOffset offset : offsets) {
+      Preconditions.checkArgument(
+          offset instanceof RealTimePartitionOffset,
+          "Invalid real-time partition offset: %s",
+          offset.getClass().getName());
+      RealTimePartitionOffset realTimeOffset = (RealTimePartitionOffset) offset;
+      Preconditions.checkArgument(
+          mergedOffsets.put(realTimeOffset.shardId(), realTimeOffset) == null,
+          "Duplicate real-time reader shard: %s",
+          realTimeOffset.shardId());
+    }
+
+    return new RealTimeOffset(mergedOffsets);
+  }
+
   private String[][] computePreferredLocations(List<CombinedScanTask> taskGroups) {
     return localityPreferred
         ? SparkPlanningUtil.fetchBlockLocations(fileIO.get(), taskGroups)
@@ -182,7 +251,7 @@ public class SparkMicroBatchStream implements MicroBatchStream, SupportsTriggerA
 
   @Override
   public PartitionReaderFactory createReaderFactory() {
-    return new SparkRowReaderFactory();
+    return new SparkRealTimeReaderFactory();
   }
 
   @Override
@@ -192,7 +261,9 @@ public class SparkMicroBatchStream implements MicroBatchStream, SupportsTriggerA
 
   @Override
   public Offset deserializeOffset(String json) {
-    return StreamingOffset.fromJson(json);
+    return RealTimeOffset.isRealTimeOffset(json)
+        ? RealTimeOffset.fromJson(json)
+        : StreamingOffset.fromJson(json);
   }
 
   @Override
@@ -200,8 +271,16 @@ public class SparkMicroBatchStream implements MicroBatchStream, SupportsTriggerA
 
   @Override
   public void stop() {
+    stopRealTimeEndpoint();
     if (planner != null) {
       planner.stop();
+    }
+  }
+
+  private synchronized void stopRealTimeEndpoint() {
+    if (realTimeEndpointRef != null) {
+      SparkEnv.get().rpcEnv().stop(realTimeEndpointRef);
+      realTimeEndpointRef = null;
     }
   }
 
