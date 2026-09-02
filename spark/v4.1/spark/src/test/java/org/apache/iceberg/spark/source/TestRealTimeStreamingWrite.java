@@ -26,6 +26,7 @@ import java.net.InetAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Properties;
 import java.util.UUID;
@@ -42,12 +43,15 @@ import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.StringSerializer;
+import org.apache.spark.TaskContext;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.catalyst.encoders.RowEncoder;
 import org.apache.spark.sql.streaming.DataStreamWriter;
 import org.apache.spark.sql.streaming.StreamingQuery;
 import org.apache.spark.sql.streaming.Trigger;
+import org.apache.spark.sql.types.StructType;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -76,7 +80,7 @@ class TestRealTimeStreamingWrite {
   static void startSpark() {
     spark =
         SparkSession.builder()
-            .master("local[2]")
+            .master("local[2,2]")
             .config("spark.driver.host", InetAddress.getLoopbackAddress().getHostAddress())
             .config("spark.sql.shuffle.partitions", 2)
             .config(ALLOWLIST_CHECK, false)
@@ -192,8 +196,74 @@ class TestRealTimeStreamingWrite {
     }
   }
 
+  @Test
+  void kafkaRealTimeAppendRetriesFailedWriteTasks() throws Exception {
+    String topic = "iceberg-rtm-task-retry-" + UUID.randomUUID();
+    createTopic(topic);
+    send(topic, "1,a", "2,b", "3,c");
+
+    File location = temp.resolve("task-retry-table").toFile();
+    File checkpoint = temp.resolve("task-retry-checkpoint").toFile();
+    Table table =
+        new HadoopTables(CONF).create(SCHEMA, PartitionSpec.unpartitioned(), location.toString());
+
+    StreamingQuery query = newRealTimeWriter(topic, location, checkpoint, false, true).start();
+    try {
+      awaitRows(location, 3L);
+
+      table.refresh();
+      assertThat(table.snapshots()).as("retried tasks produce one committed epoch").hasSize(1);
+      assertThat(table.currentSnapshot().summary())
+          .containsKeys("spark.sql.streaming.queryId", "spark.sql.streaming.epochId");
+    } finally {
+      query.stop();
+    }
+  }
+
+  @Test
+  void concurrentRealTimeQueriesCommitAllRows() throws Exception {
+    String firstTopic = "iceberg-rtm-concurrent-1-" + UUID.randomUUID();
+    String secondTopic = "iceberg-rtm-concurrent-2-" + UUID.randomUUID();
+    createTopic(firstTopic);
+    createTopic(secondTopic);
+    send(firstTopic, "1,a", "2,b", "3,c");
+    send(secondTopic, "4,d", "5,e", "6,f");
+
+    File location = temp.resolve("concurrent-table").toFile();
+    File firstCheckpoint = temp.resolve("concurrent-checkpoint-1").toFile();
+    File secondCheckpoint = temp.resolve("concurrent-checkpoint-2").toFile();
+    Table table =
+        new HadoopTables(CONF).create(SCHEMA, PartitionSpec.unpartitioned(), location.toString());
+
+    StreamingQuery first = newRealTimeWriter(firstTopic, location, firstCheckpoint, false).start();
+    StreamingQuery second =
+        newRealTimeWriter(secondTopic, location, secondCheckpoint, false).start();
+    try {
+      awaitRows(location, 6L);
+
+      table.refresh();
+      assertThat(table.snapshots()).as("one commit from each RTM query").hasSize(2);
+      assertThat(
+              spark.read().format("iceberg").load(location.toString()).select("id").collectAsList())
+          .extracting(row -> row.getInt(0))
+          .containsExactlyInAnyOrder(1, 2, 3, 4, 5, 6);
+    } finally {
+      first.stop();
+      second.stop();
+    }
+  }
+
   private DataStreamWriter<Row> newRealTimeWriter(
       String topic, File location, File checkpoint, boolean asyncProgressTrackingEnabled) {
+    return newRealTimeWriter(topic, location, checkpoint, asyncProgressTrackingEnabled, false);
+  }
+
+  private DataStreamWriter<Row> newRealTimeWriter(
+      String topic,
+      File location,
+      File checkpoint,
+      boolean asyncProgressTrackingEnabled,
+      boolean failFirstTaskAttempt) {
     Dataset<Row> input =
         spark
             .readStream()
@@ -204,6 +274,30 @@ class TestRealTimeStreamingWrite {
             .load()
             .selectExpr("CAST(value AS STRING) AS value")
             .selectExpr("CAST(split(value, ',')[0] AS INT) AS id", "split(value, ',')[1] AS data");
+
+    if (failFirstTaskAttempt) {
+      StructType inputSchema = input.schema();
+      input =
+          input.mapPartitions(
+              rows ->
+                  new Iterator<>() {
+                    @Override
+                    public boolean hasNext() {
+                      boolean hasNext = rows.hasNext();
+                      if (!hasNext && TaskContext.get().attemptNumber() == 0) {
+                        throw new IllegalStateException("Injected failure after writing task rows");
+                      }
+
+                      return hasNext;
+                    }
+
+                    @Override
+                    public Row next() {
+                      return rows.next();
+                    }
+                  },
+              RowEncoder.encoderFor(inputSchema));
+    }
 
     DataStreamWriter<Row> writer =
         input
