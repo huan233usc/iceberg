@@ -22,7 +22,10 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
 
 import java.io.File;
+import java.io.IOException;
+import java.io.UncheckedIOException;
 import java.net.InetAddress;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
@@ -103,6 +106,7 @@ class TestRealTimeStreamingReadWrite {
     try {
       append(sourceLocation, new SimpleRecord(1, "a"), new SimpleRecord(2, "b"));
       awaitRows(destinationLocation, 2L);
+      awaitRealTimeOffset(checkpoint);
       query.stop();
 
       source.updateSchema().addColumn("extra", Types.StringType.get()).commit();
@@ -273,6 +277,32 @@ class TestRealTimeStreamingReadWrite {
             () ->
                 assertThat(spark.read().format("iceberg").load(location.toString()).count())
                     .isEqualTo(expectedRows));
+  }
+
+  private void awaitRealTimeOffset(File checkpoint) {
+    await()
+        .atMost(Duration.ofSeconds(30))
+        .untilAsserted(
+            () -> {
+              File[] offsets =
+                  new File(checkpoint, "offsets")
+                      .listFiles(file -> file.isFile() && file.getName().matches("\\d+"));
+              assertThat(offsets).isNotNull().isNotEmpty();
+              assertThat(offsets)
+                  .anySatisfy(
+                      offset ->
+                          assertThat(readString(offset))
+                              .contains("\"version\":2")
+                              .contains("\"shards\""));
+            });
+  }
+
+  private String readString(File file) {
+    try {
+      return Files.readString(file.toPath());
+    } catch (IOException e) {
+      throw new UncheckedIOException("Failed to read checkpoint offset " + file, e);
+    }
   }
 
   private List<SimpleRecord> readRows(File location) {
