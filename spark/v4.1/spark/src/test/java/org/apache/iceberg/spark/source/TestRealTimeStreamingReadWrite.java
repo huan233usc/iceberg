@@ -27,11 +27,14 @@ import java.nio.file.Path;
 import java.time.Duration;
 import java.util.List;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.iceberg.DataFile;
 import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.hadoop.HadoopTables;
+import org.apache.iceberg.io.CloseableIterable;
+import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.spark.SparkReadOptions;
 import org.apache.iceberg.spark.TestBase;
 import org.apache.iceberg.types.Types;
@@ -95,18 +98,7 @@ class TestRealTimeStreamingReadWrite {
         tables.create(SCHEMA, PartitionSpec.unpartitioned(), destinationLocation.toString());
 
     DataStreamWriter<Row> writer =
-        spark
-            .readStream()
-            .format("iceberg")
-            .option(SparkReadOptions.STREAMING_REAL_TIME_SHARDS, 2)
-            .load(sourceLocation.toString())
-            .writeStream()
-            .outputMode("update")
-            .format("iceberg")
-            .option("checkpointLocation", checkpoint.toString())
-            .option("path", destinationLocation.toString())
-            .option(SparkWriteBuilder.REAL_TIME_MODE_ENABLED, true)
-            .trigger(Trigger.RealTime(5_000L));
+        newRealTimeWriter(sourceLocation, destinationLocation, checkpoint);
 
     StreamingQuery query = writer.start();
     try {
@@ -142,11 +134,140 @@ class TestRealTimeStreamingReadWrite {
     }
   }
 
+  @Test
+  void rejectsDeleteSnapshotsByDefault() throws Exception {
+    File sourceLocation = temp.resolve("delete-source").toFile();
+    File destinationLocation = temp.resolve("delete-destination").toFile();
+    File checkpoint = temp.resolve("delete-checkpoint").toFile();
+    HadoopTables tables = new HadoopTables(CONF);
+    Table source = tables.create(SCHEMA, PartitionSpec.unpartitioned(), sourceLocation.toString());
+    tables.create(SCHEMA, PartitionSpec.unpartitioned(), destinationLocation.toString());
+
+    StreamingQuery query =
+        newRealTimeWriter(sourceLocation, destinationLocation, checkpoint).start();
+    try {
+      append(sourceLocation, new SimpleRecord(1, "a"));
+      awaitRows(destinationLocation, 1L);
+
+      source.refresh();
+      DataFile dataFile;
+      try (CloseableIterable<DataFile> addedFiles =
+          source.currentSnapshot().addedDataFiles(source.io())) {
+        dataFile = Iterables.getOnlyElement(addedFiles);
+      }
+
+      source.newDelete().deleteFile(dataFile).commit();
+
+      await()
+          .atMost(Duration.ofSeconds(45))
+          .untilAsserted(() -> assertThat(query.exception()).isNotEmpty());
+      assertThat(query.exception().get()).hasStackTraceContaining("Cannot process delete snapshot");
+    } finally {
+      if (query.isActive()) {
+        query.stop();
+      }
+    }
+  }
+
+  @Test
+  void rejectsOverwriteSnapshotsByDefault() throws Exception {
+    File sourceLocation = temp.resolve("overwrite-source").toFile();
+    File destinationLocation = temp.resolve("overwrite-destination").toFile();
+    File checkpoint = temp.resolve("overwrite-checkpoint").toFile();
+    HadoopTables tables = new HadoopTables(CONF);
+    tables.create(SCHEMA, PartitionSpec.unpartitioned(), sourceLocation.toString());
+    tables.create(SCHEMA, PartitionSpec.unpartitioned(), destinationLocation.toString());
+
+    StreamingQuery query =
+        newRealTimeWriter(sourceLocation, destinationLocation, checkpoint).start();
+    try {
+      append(sourceLocation, new SimpleRecord(1, "a"));
+      awaitRows(destinationLocation, 1L);
+
+      write(sourceLocation, SaveMode.Overwrite, new SimpleRecord(2, "b"), new SimpleRecord(3, "c"));
+
+      await()
+          .atMost(Duration.ofSeconds(45))
+          .untilAsserted(() -> assertThat(query.exception()).isNotEmpty());
+      assertThat(query.exception().get())
+          .hasStackTraceContaining("Cannot process overwrite snapshot");
+    } finally {
+      if (query.isActive()) {
+        query.stop();
+      }
+    }
+  }
+
+  @Test
+  void failsWhenCheckpointSnapshotIsExpired() throws Exception {
+    File sourceLocation = temp.resolve("expired-source").toFile();
+    File destinationLocation = temp.resolve("expired-destination").toFile();
+    File checkpoint = temp.resolve("expired-checkpoint").toFile();
+    HadoopTables tables = new HadoopTables(CONF);
+    Table source = tables.create(SCHEMA, PartitionSpec.unpartitioned(), sourceLocation.toString());
+    tables.create(SCHEMA, PartitionSpec.unpartitioned(), destinationLocation.toString());
+    DataStreamWriter<Row> writer =
+        newRealTimeWriter(sourceLocation, destinationLocation, checkpoint);
+
+    StreamingQuery query = writer.start();
+    try {
+      append(sourceLocation, new SimpleRecord(1, "a"));
+      awaitRows(destinationLocation, 1L);
+      await()
+          .atMost(Duration.ofSeconds(30))
+          .untilAsserted(
+              () ->
+                  assertThat(new File(checkpoint, "commits").listFiles()).isNotNull().isNotEmpty());
+    } finally {
+      query.stop();
+    }
+
+    source.refresh();
+    long expiredSnapshotId = source.currentSnapshot().snapshotId();
+    append(sourceLocation, new SimpleRecord(2, "b"));
+    source.refresh();
+    source.expireSnapshots().expireSnapshotId(expiredSnapshotId).commit();
+
+    StreamingQuery restarted = writer.start();
+    try {
+      await()
+          .atMost(Duration.ofSeconds(45))
+          .untilAsserted(() -> assertThat(restarted.exception()).isNotEmpty());
+      assertThat(restarted.exception().get())
+          .hasStackTraceContaining("Cannot load current offset at snapshot " + expiredSnapshotId);
+      awaitRows(destinationLocation, 1L);
+    } finally {
+      if (restarted.isActive()) {
+        restarted.stop();
+      }
+    }
+  }
+
+  private DataStreamWriter<Row> newRealTimeWriter(
+      File sourceLocation, File destinationLocation, File checkpoint) {
+    return spark
+        .readStream()
+        .format("iceberg")
+        .option(SparkReadOptions.STREAMING_REAL_TIME_SHARDS, 2)
+        .load(sourceLocation.toString())
+        .writeStream()
+        .outputMode("update")
+        .format("iceberg")
+        .option("checkpointLocation", checkpoint.toString())
+        .option("path", destinationLocation.toString())
+        .option(SparkWriteBuilder.REAL_TIME_MODE_ENABLED, true)
+        .trigger(Trigger.RealTime(5_000L));
+  }
+
   private void append(File location, SimpleRecord... records) {
+    write(location, SaveMode.Append, records);
+  }
+
+  private void write(File location, SaveMode mode, SimpleRecord... records) {
     Dataset<Row> data =
         spark.createDataset(List.of(records), Encoders.bean(SimpleRecord.class)).toDF();
     DataFrameWriter<Row> writer = data.select("id", "data").write();
-    writer.format("iceberg").mode(SaveMode.Append).save(location.toString());
+    writer.format("iceberg").mode(mode).save(location.toString());
   }
 
   private void awaitRows(File location, long expectedRows) {
