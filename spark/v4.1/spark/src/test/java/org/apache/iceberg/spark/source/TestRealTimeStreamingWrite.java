@@ -35,6 +35,7 @@ import org.apache.iceberg.PartitionSpec;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.hadoop.HadoopTables;
+import org.apache.iceberg.spark.SparkReadOptions;
 import org.apache.iceberg.spark.TestBase;
 import org.apache.iceberg.types.Types;
 import org.apache.kafka.clients.admin.Admin;
@@ -46,6 +47,7 @@ import org.apache.kafka.common.serialization.StringSerializer;
 import org.apache.spark.TaskContext;
 import org.apache.spark.api.java.function.MapPartitionsFunction;
 import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Encoders;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.catalyst.encoders.RowEncoder;
@@ -198,17 +200,46 @@ class TestRealTimeStreamingWrite {
   }
 
   @Test
-  void kafkaRealTimeAppendRetriesFailedWriteTasks() throws Exception {
-    String topic = "iceberg-rtm-task-retry-" + UUID.randomUUID();
-    createTopic(topic);
-    send(topic, "1,a", "2,b", "3,c");
-
+  void icebergRealTimeAppendRetriesFailedWriteTasks() throws Exception {
+    File sourceLocation = temp.resolve("task-retry-source").toFile();
     File location = temp.resolve("task-retry-table").toFile();
     File checkpoint = temp.resolve("task-retry-checkpoint").toFile();
-    Table table =
-        new HadoopTables(CONF).create(SCHEMA, PartitionSpec.unpartitioned(), location.toString());
+    HadoopTables tables = new HadoopTables(CONF);
+    tables.create(SCHEMA, PartitionSpec.unpartitioned(), sourceLocation.toString());
+    Table table = tables.create(SCHEMA, PartitionSpec.unpartitioned(), location.toString());
+    spark
+        .createDataset(
+            List.of(new SimpleRecord(1, "a"), new SimpleRecord(2, "b"), new SimpleRecord(3, "c")),
+            Encoders.bean(SimpleRecord.class))
+        .select("id", "data")
+        .write()
+        .format("iceberg")
+        .mode("append")
+        .save(sourceLocation.toString());
 
-    StreamingQuery query = newRealTimeWriter(topic, location, checkpoint, false, true).start();
+    Dataset<Row> input =
+        spark
+            .readStream()
+            .format("iceberg")
+            .option(SparkReadOptions.STREAMING_REAL_TIME_SHARDS, 1)
+            .load(sourceLocation.toString());
+    StructType inputSchema = input.schema();
+    input =
+        input.mapPartitions(
+            (MapPartitionsFunction<Row, Row>) FailFirstTaskAttemptIterator::new,
+            RowEncoder.encoderFor(inputSchema));
+
+    StreamingQuery query =
+        input
+            .writeStream()
+            .outputMode("update")
+            .format("iceberg")
+            .option("checkpointLocation", checkpoint.toString())
+            .option("path", location.toString())
+            .option(SparkWriteBuilder.REAL_TIME_MODE_ENABLED, "true")
+            .option("asyncProgressTrackingEnabled", "false")
+            .trigger(Trigger.RealTime(5_000L))
+            .start();
     try {
       awaitRows(location, 3L);
 
@@ -256,15 +287,6 @@ class TestRealTimeStreamingWrite {
 
   private DataStreamWriter<Row> newRealTimeWriter(
       String topic, File location, File checkpoint, boolean asyncProgressTrackingEnabled) {
-    return newRealTimeWriter(topic, location, checkpoint, asyncProgressTrackingEnabled, false);
-  }
-
-  private DataStreamWriter<Row> newRealTimeWriter(
-      String topic,
-      File location,
-      File checkpoint,
-      boolean asyncProgressTrackingEnabled,
-      boolean failFirstTaskAttempt) {
     Dataset<Row> input =
         spark
             .readStream()
@@ -275,14 +297,6 @@ class TestRealTimeStreamingWrite {
             .load()
             .selectExpr("CAST(value AS STRING) AS value")
             .selectExpr("CAST(split(value, ',')[0] AS INT) AS id", "split(value, ',')[1] AS data");
-
-    if (failFirstTaskAttempt) {
-      StructType inputSchema = input.schema();
-      input =
-          input.mapPartitions(
-              (MapPartitionsFunction<Row, Row>) FailFirstTaskAttemptIterator::new,
-              RowEncoder.encoderFor(inputSchema));
-    }
 
     DataStreamWriter<Row> writer =
         input
@@ -369,17 +383,17 @@ class TestRealTimeStreamingWrite {
 
     @Override
     public boolean hasNext() {
-      boolean hasNext = rows.hasNext();
-      if (!hasNext && TaskContext.get().attemptNumber() == 0) {
-        throw new IllegalStateException("Injected failure after writing task rows");
-      }
-
-      return hasNext;
+      return rows.hasNext();
     }
 
     @Override
     public Row next() {
-      return rows.next();
+      Row row = rows.next();
+      if (TaskContext.get().attemptNumber() == 0) {
+        throw new IllegalStateException("Injected failure after writing task rows");
+      }
+
+      return row;
     }
   }
 }

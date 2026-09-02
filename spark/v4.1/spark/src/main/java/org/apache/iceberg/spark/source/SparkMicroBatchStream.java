@@ -141,6 +141,10 @@ public class SparkMicroBatchStream
 
   @Override
   public InputPartition[] planInputPartitions(Offset start, Offset end) {
+    if (start instanceof RealTimeOffset || end instanceof RealTimeOffset) {
+      return planInputPartitions(start);
+    }
+
     Preconditions.checkArgument(
         end instanceof StreamingOffset, "Invalid end offset: %s is not a StreamingOffset", end);
     Preconditions.checkArgument(
@@ -308,6 +312,11 @@ public class SparkMicroBatchStream
 
   @Override
   public Offset latestOffset(Offset startOffset, ReadLimit limit) {
+    // RTM availability is discovered by long-running readers, not by pre-computing an end offset.
+    if (startOffset instanceof RealTimeOffset) {
+      return startOffset;
+    }
+
     Preconditions.checkArgument(
         startOffset instanceof StreamingOffset,
         "Invalid start offset: %s is not a StreamingOffset",
