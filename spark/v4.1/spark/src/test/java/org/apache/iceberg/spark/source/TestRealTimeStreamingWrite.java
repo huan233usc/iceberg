@@ -44,6 +44,7 @@ import org.apache.kafka.clients.producer.ProducerConfig;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.apache.spark.TaskContext;
+import org.apache.spark.api.java.function.MapPartitionsFunction;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
@@ -279,23 +280,25 @@ class TestRealTimeStreamingWrite {
       StructType inputSchema = input.schema();
       input =
           input.mapPartitions(
-              rows ->
-                  new Iterator<>() {
-                    @Override
-                    public boolean hasNext() {
-                      boolean hasNext = rows.hasNext();
-                      if (!hasNext && TaskContext.get().attemptNumber() == 0) {
-                        throw new IllegalStateException("Injected failure after writing task rows");
-                      }
+              (MapPartitionsFunction<Row, Row>)
+                  rows ->
+                      new Iterator<>() {
+                        @Override
+                        public boolean hasNext() {
+                          boolean hasNext = rows.hasNext();
+                          if (!hasNext && TaskContext.get().attemptNumber() == 0) {
+                            throw new IllegalStateException(
+                                "Injected failure after writing task rows");
+                          }
 
-                      return hasNext;
-                    }
+                          return hasNext;
+                        }
 
-                    @Override
-                    public Row next() {
-                      return rows.next();
-                    }
-                  },
+                        @Override
+                        public Row next() {
+                          return rows.next();
+                        }
+                      },
               RowEncoder.encoderFor(inputSchema));
     }
 
