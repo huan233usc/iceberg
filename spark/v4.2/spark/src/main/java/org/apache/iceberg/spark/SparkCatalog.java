@@ -56,7 +56,6 @@ import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.rest.RESTCatalog;
 import org.apache.iceberg.spark.actions.SparkActions;
-import org.apache.iceberg.spark.source.SparkChangelog;
 import org.apache.iceberg.spark.source.SparkChangelogTable;
 import org.apache.iceberg.spark.source.SparkTable;
 import org.apache.iceberg.spark.source.SparkView;
@@ -200,7 +199,7 @@ public class SparkCatalog extends BaseCatalog {
       Identifier ident, ChangelogContext context, CaseInsensitiveStringMap options)
       throws NoSuchTableException {
     try {
-      return new SparkChangelog(icebergCatalog.loadTable(buildIdentifier(ident)), context);
+      return new SparkChangelogTable(icebergCatalog.loadTable(buildIdentifier(ident)), context);
     } catch (org.apache.iceberg.exceptions.NoSuchTableException e) {
       throw new NoSuchTableException(ident);
     }

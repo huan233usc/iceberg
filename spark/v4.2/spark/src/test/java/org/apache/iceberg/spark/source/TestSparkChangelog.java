@@ -79,4 +79,18 @@ class TestSparkChangelog extends TestBaseWithCatalog {
         .containsExactly(row(1L, "a", "insert"), row(2L, "b", "insert"));
     spark.catalog().dropTempView(queryName);
   }
+
+  @TestTemplate
+  void tableChangesKeepsIcebergChangelogColumns() {
+    sql("CREATE TABLE %s (id bigint, data string) USING iceberg", tableName);
+    sql("INSERT INTO %s VALUES (1, 'a')", tableName);
+
+    assertThat(sql("SELECT id, data, _change_type, _commit_snapshot_id FROM %s.changes", tableName))
+        .hasSize(1)
+        .allSatisfy(
+            row -> {
+              assertThat(row[2]).isEqualTo("INSERT");
+              assertThat(row[3]).isInstanceOf(Long.class);
+            });
+  }
 }

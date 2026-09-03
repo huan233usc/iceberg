@@ -76,7 +76,7 @@ class ChangelogRowReader extends BaseRowReader<ChangelogScanTask>
         dataSchema(table, expectedSchema),
         caseSensitive,
         cacheDeleteFilesOnExecutors);
-    this.sparkCdc = expectedSchema.findField(SparkChangelog.COMMIT_VERSION) != null;
+    this.sparkCdc = expectedSchema.findField(SparkChangelogTable.COMMIT_VERSION) != null;
   }
 
   @Override
@@ -111,7 +111,7 @@ class ChangelogRowReader extends BaseRowReader<ChangelogScanTask>
   }
 
   private static Schema dataSchema(Table table, Schema expectedSchema) {
-    return expectedSchema.findField(SparkChangelog.COMMIT_VERSION) != null
+    return expectedSchema.findField(SparkChangelogTable.COMMIT_VERSION) != null
         ? table.schema()
         : ChangelogUtil.dropChangelogMetadata(expectedSchema);
   }
