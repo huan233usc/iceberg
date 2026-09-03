@@ -38,12 +38,11 @@ import org.apache.spark.sql.util.CaseInsensitiveStringMap;
 public class SparkChangelogScanBuilder extends BaseSparkScanBuilder
     implements SupportsPushDownV2Filters, SupportsPushDownRequiredColumns, SupportsPushDownLimit {
 
-  private final boolean sparkCdc;
-  private final boolean empty;
+  private final SparkChangelogReadMode readMode;
 
   SparkChangelogScanBuilder(
       SparkSession spark, Table table, Schema schema, CaseInsensitiveStringMap options) {
-    this(spark, table, schema, options, false, false);
+    this(spark, table, schema, options, SparkChangelogReadMode.ICEBERG_CHANGELOG);
   }
 
   SparkChangelogScanBuilder(
@@ -51,23 +50,21 @@ public class SparkChangelogScanBuilder extends BaseSparkScanBuilder
       Table table,
       Schema schema,
       CaseInsensitiveStringMap options,
-      boolean sparkCdc,
-      boolean empty) {
+      SparkChangelogReadMode readMode) {
     super(spark, table, schema, options);
-    this.sparkCdc = sparkCdc;
-    this.empty = empty;
+    this.readMode = readMode;
   }
 
   @Override
   public void pruneColumns(StructType requestedType) {
-    if (!sparkCdc) {
+    if (!readMode.isSparkCdc()) {
       super.pruneColumns(requestedType);
     }
   }
 
   @Override
   public Predicate[] pushPredicates(Predicate[] predicates) {
-    return sparkCdc ? predicates : super.pushPredicates(predicates);
+    return readMode.isSparkCdc() ? predicates : super.pushPredicates(predicates);
   }
 
   @Override
@@ -95,7 +92,7 @@ public class SparkChangelogScanBuilder extends BaseSparkScanBuilder
         SparkReadOptions.START_TIMESTAMP,
         SparkReadOptions.END_TIMESTAMP);
 
-    if (empty) {
+    if (readMode.isEmpty()) {
       return emptyChangelogScan();
     } else if (startTimestamp != null) {
       if (noSnapshotsAfter(startTimestamp)) {
@@ -113,11 +110,11 @@ public class SparkChangelogScanBuilder extends BaseSparkScanBuilder
 
     Schema readProjection = projectionWithMetadataColumns();
     Schema scanProjection =
-        sparkCdc ? ChangelogUtil.changelogSchema(table().schema()) : readProjection;
+        readMode.isSparkCdc() ? ChangelogUtil.changelogSchema(table().schema()) : readProjection;
     IncrementalChangelogScan scan =
         buildIcebergScan(scanProjection, startSnapshotId, endSnapshotId);
     return new SparkChangelogScan(
-        spark(), table(), scan, readConf(), readProjection, filters(), sparkCdc);
+        spark(), table(), scan, readConf(), readProjection, filters(), readMode);
   }
 
   private IncrementalChangelogScan buildIcebergScan(
@@ -151,7 +148,7 @@ public class SparkChangelogScanBuilder extends BaseSparkScanBuilder
         readConf(),
         projectionWithMetadataColumns(),
         filters(),
-        sparkCdc);
+        readMode);
   }
 
   private boolean noSnapshotsAfter(long timestamp) {

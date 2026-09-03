@@ -50,7 +50,7 @@ import org.apache.spark.unsafe.types.UTF8String;
 class ChangelogRowReader extends BaseRowReader<ChangelogScanTask>
     implements PartitionReader<InternalRow> {
 
-  private final boolean sparkCdc;
+  private final SparkChangelogReadMode readMode;
 
   ChangelogRowReader(SparkInputPartition partition) {
     this(
@@ -76,7 +76,10 @@ class ChangelogRowReader extends BaseRowReader<ChangelogScanTask>
         dataSchema(table, expectedSchema),
         caseSensitive,
         cacheDeleteFilesOnExecutors);
-    this.sparkCdc = expectedSchema.findField(SparkChangelogTable.COMMIT_VERSION) != null;
+    this.readMode =
+        expectedSchema.findField(SparkChangelogTable.COMMIT_VERSION) != null
+            ? SparkChangelogReadMode.SPARK_CDC
+            : SparkChangelogReadMode.ICEBERG_CHANGELOG;
   }
 
   @Override
@@ -94,7 +97,7 @@ class ChangelogRowReader extends BaseRowReader<ChangelogScanTask>
   private InternalRow changelogMetadata(ChangelogScanTask task) {
     InternalRow metadataRow = new GenericInternalRow(3);
 
-    if (sparkCdc) {
+    if (readMode.isSparkCdc()) {
       Snapshot snapshot = table().snapshot(task.commitSnapshotId());
       Preconditions.checkNotNull(
           snapshot, "Cannot find snapshot for changelog task: %s", task.commitSnapshotId());

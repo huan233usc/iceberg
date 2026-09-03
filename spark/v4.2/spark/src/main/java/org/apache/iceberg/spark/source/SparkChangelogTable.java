@@ -48,7 +48,6 @@ import org.apache.spark.sql.connector.catalog.SupportsRead;
 import org.apache.spark.sql.connector.catalog.TableCapability;
 import org.apache.spark.sql.connector.expressions.NamedReference;
 import org.apache.spark.sql.connector.read.ScanBuilder;
-import org.apache.spark.sql.types.StructField;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.util.CaseInsensitiveStringMap;
 
@@ -176,8 +175,7 @@ public class SparkChangelogTable
         table,
         sparkCdcSchema,
         new CaseInsensitiveStringMap(scanOptions),
-        true /* Spark CDC */,
-        range.empty());
+        range.readMode());
   }
 
   private SparkSession spark() {
@@ -202,7 +200,7 @@ public class SparkChangelogTable
   private RangeOptions rangeOptions() {
     ChangelogRange range = context.range();
     if (range instanceof ChangelogRange.UnboundedRange) {
-      return new RangeOptions(Collections.emptyMap(), false);
+      return RangeOptions.scan(Collections.emptyMap());
     } else if (range instanceof ChangelogRange.VersionRange) {
       return versionRangeOptions((ChangelogRange.VersionRange) range);
     } else if (range instanceof ChangelogRange.TimestampRange) {
@@ -245,7 +243,7 @@ public class SparkChangelogTable
             .orElse(null);
 
     if (start == null || end == null || start.sequenceNumber() > end.sequenceNumber()) {
-      return new RangeOptions(Collections.emptyMap(), true);
+      return RangeOptions.empty();
     }
 
     return snapshotRangeOptions(start.parentId(), end.snapshotId());
@@ -253,18 +251,18 @@ public class SparkChangelogTable
 
   private RangeOptions snapshotRangeOptions(Long startExclusive, Long endInclusive) {
     if (endInclusive == null) {
-      return new RangeOptions(Collections.emptyMap(), true);
+      return RangeOptions.empty();
     }
 
     Snapshot end = table.snapshot(endInclusive);
     if (end == null) {
-      return new RangeOptions(Collections.emptyMap(), true);
+      return RangeOptions.empty();
     }
 
     if (startExclusive != null) {
       Snapshot start = table.snapshot(startExclusive);
       if (start != null && start.sequenceNumber() >= end.sequenceNumber()) {
-        return new RangeOptions(Collections.emptyMap(), true);
+        return RangeOptions.empty();
       }
     }
 
@@ -273,7 +271,7 @@ public class SparkChangelogTable
       options.put(SparkReadOptions.START_SNAPSHOT_ID, String.valueOf(startExclusive));
     }
     options.put(SparkReadOptions.END_SNAPSHOT_ID, String.valueOf(endInclusive));
-    return new RangeOptions(options, false);
+    return RangeOptions.scan(options);
   }
 
   private Snapshot snapshotWithSequenceNumber(String version) {
@@ -308,19 +306,27 @@ public class SparkChangelogTable
 
   private static class RangeOptions {
     private final Map<String, String> options;
-    private final boolean empty;
+    private final SparkChangelogReadMode readMode;
 
-    private RangeOptions(Map<String, String> options, boolean empty) {
+    private RangeOptions(Map<String, String> options, SparkChangelogReadMode readMode) {
       this.options = options;
-      this.empty = empty;
+      this.readMode = readMode;
+    }
+
+    private static RangeOptions scan(Map<String, String> options) {
+      return new RangeOptions(options, SparkChangelogReadMode.SPARK_CDC);
+    }
+
+    private static RangeOptions empty() {
+      return new RangeOptions(Collections.emptyMap(), SparkChangelogReadMode.EMPTY_SPARK_CDC);
     }
 
     private Map<String, String> options() {
       return options;
     }
 
-    private boolean empty() {
-      return empty;
+    private SparkChangelogReadMode readMode() {
+      return readMode;
     }
   }
 }
