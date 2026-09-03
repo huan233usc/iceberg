@@ -18,6 +18,7 @@
  */
 package org.apache.iceberg.spark.source;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Stream;
@@ -39,10 +40,12 @@ import org.apache.iceberg.io.CloseableIterator;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.InputFile;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
+import org.apache.iceberg.spark.SparkSchemaUtil;
 import org.apache.spark.rdd.InputFileBlockHolder;
 import org.apache.spark.sql.catalyst.InternalRow;
 import org.apache.spark.sql.catalyst.expressions.GenericInternalRow;
 import org.apache.spark.sql.catalyst.expressions.JoinedRow;
+import org.apache.spark.sql.catalyst.expressions.UnsafeProjection;
 import org.apache.spark.sql.connector.catalog.Changelog;
 import org.apache.spark.sql.connector.read.PartitionReader;
 import org.apache.spark.unsafe.types.UTF8String;
@@ -133,7 +136,7 @@ class ChangelogRowReader extends BaseRowReader<ChangelogScanTask>
       return openAddedRowsScanTask((AddedRowsScanTask) task);
 
     } else if (task instanceof DeletedRowsScanTask) {
-      throw new UnsupportedOperationException("Deleted rows scan task is not supported yet");
+      return openDeletedRowsScanTask((DeletedRowsScanTask) task);
 
     } else if (task instanceof DeletedDataFileScanTask) {
       return openDeletedDataFileScanTask((DeletedDataFileScanTask) task);
@@ -148,6 +151,27 @@ class ChangelogRowReader extends BaseRowReader<ChangelogScanTask>
     String filePath = task.file().location();
     SparkDeleteFilter deletes = new SparkDeleteFilter(filePath, task.deletes(), counter(), true);
     return deletes.filter(rows(task, deletes.requiredSchema()));
+  }
+
+  private CloseableIterable<InternalRow> openDeletedRowsScanTask(DeletedRowsScanTask task) {
+    String filePath = task.file().location();
+    List<DeleteFile> allDeletes = new ArrayList<>(task.existingDeletes());
+    allDeletes.addAll(task.addedDeletes());
+
+    SparkDeleteFilter allDeleteFilter =
+        new SparkDeleteFilter(filePath, allDeletes, counter(), true);
+    Schema readSchema = allDeleteFilter.requiredSchema();
+    SparkDeleteFilter existingDeleteFilter =
+        new SparkDeleteFilter(filePath, task.existingDeletes(), readSchema, counter(), true);
+    SparkDeleteFilter addedDeleteFilter =
+        new SparkDeleteFilter(filePath, task.addedDeletes(), readSchema, counter(), true);
+
+    CloseableIterable<InternalRow> existingRows =
+        existingDeleteFilter.filter(rows(task, readSchema));
+    CloseableIterable<InternalRow> deletedRows = addedDeleteFilter.findDeletedRows(existingRows);
+    UnsafeProjection projection =
+        UnsafeProjection.create(SparkSchemaUtil.convert(expectedSchema()));
+    return CloseableIterable.transform(deletedRows, projection::apply);
   }
 
   private CloseableIterable<InternalRow> openDeletedDataFileScanTask(DeletedDataFileScanTask task) {
@@ -183,7 +207,7 @@ class ChangelogRowReader extends BaseRowReader<ChangelogScanTask>
       return addedRowsScanTaskFiles((AddedRowsScanTask) task);
 
     } else if (task instanceof DeletedRowsScanTask) {
-      throw new UnsupportedOperationException("Deleted rows scan task is not supported yet");
+      return deletedRowsScanTaskFiles((DeletedRowsScanTask) task);
 
     } else if (task instanceof DeletedDataFileScanTask) {
       return deletedDataFileScanTaskFiles((DeletedDataFileScanTask) task);
@@ -198,6 +222,12 @@ class ChangelogRowReader extends BaseRowReader<ChangelogScanTask>
     DataFile file = task.file();
     List<DeleteFile> existingDeletes = task.existingDeletes();
     return Stream.concat(Stream.of(file), existingDeletes.stream());
+  }
+
+  private static Stream<ContentFile<?>> deletedRowsScanTaskFiles(DeletedRowsScanTask task) {
+    Stream<DeleteFile> deletes =
+        Stream.concat(task.addedDeletes().stream(), task.existingDeletes().stream());
+    return Stream.concat(Stream.of(task.file()), deletes);
   }
 
   private static Stream<ContentFile<?>> addedRowsScanTaskFiles(AddedRowsScanTask task) {

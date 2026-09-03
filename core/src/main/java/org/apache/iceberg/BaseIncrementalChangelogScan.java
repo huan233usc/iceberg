@@ -19,9 +19,12 @@
 package org.apache.iceberg;
 
 import java.util.ArrayDeque;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Deque;
+import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 import org.apache.iceberg.ManifestGroup.CreateTasksFunction;
@@ -29,7 +32,9 @@ import org.apache.iceberg.ManifestGroup.TaskContext;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.relocated.com.google.common.collect.FluentIterable;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
+import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
+import org.apache.iceberg.util.ContentFileUtil;
 import org.apache.iceberg.util.SnapshotUtil;
 import org.apache.iceberg.util.TableScanUtil;
 
@@ -71,7 +76,7 @@ class BaseIncrementalChangelogScan
             .filter(manifest -> changelogSnapshotIds.contains(manifest.snapshotId()))
             .toSet();
 
-    ManifestGroup manifestGroup =
+    ManifestGroup dataManifestGroup =
         new ManifestGroup(table().io(), newDataManifests, ImmutableList.of())
             .specsById(table().specs())
             .caseSensitive(isCaseSensitive())
@@ -82,14 +87,54 @@ class BaseIncrementalChangelogScan
             .columnsToKeepStats(columnsToKeepStats());
 
     if (shouldIgnoreResiduals()) {
-      manifestGroup = manifestGroup.ignoreResiduals();
+      dataManifestGroup = dataManifestGroup.ignoreResiduals();
     }
 
     if (newDataManifests.size() > 1 && shouldPlanWithExecutor()) {
-      manifestGroup = manifestGroup.planWith(planExecutor());
+      dataManifestGroup = dataManifestGroup.planWith(planExecutor());
     }
 
-    return manifestGroup.plan(new CreateDataFileChangeTasks(changelogSnapshots));
+    List<CloseableIterable<ChangelogScanTask>> taskIterables =
+        Lists.newArrayList(
+            dataManifestGroup.plan(new CreateDataFileChangeTasks(changelogSnapshots)));
+
+    Map<Long, Integer> snapshotOrdinals = computeSnapshotOrdinals(changelogSnapshots);
+    for (Snapshot snapshot : changelogSnapshots) {
+      List<ManifestFile> deleteManifests = snapshot.deleteManifests(table().io());
+      boolean hasAddedDeleteFiles =
+          deleteManifests.stream()
+              .anyMatch(
+                  manifest ->
+                      manifest.snapshotId() == snapshot.snapshotId() && manifest.hasAddedFiles());
+      if (hasAddedDeleteFiles) {
+        List<ManifestFile> dataManifests = snapshot.dataManifests(table().io());
+        ManifestGroup deleteManifestGroup =
+            new ManifestGroup(table().io(), dataManifests, deleteManifests)
+                .specsById(table().specs())
+                .caseSensitive(isCaseSensitive())
+                .select(scanColumns())
+                .filterData(filter())
+                .ignoreDeleted()
+                .columnsToKeepStats(columnsToKeepStats());
+
+        if (shouldIgnoreResiduals()) {
+          deleteManifestGroup = deleteManifestGroup.ignoreResiduals();
+        }
+
+        if (dataManifests.size() > 1 && shouldPlanWithExecutor()) {
+          deleteManifestGroup = deleteManifestGroup.planWith(planExecutor());
+        }
+
+        taskIterables.add(
+            deleteManifestGroup.plan(
+                new CreateDeletedRowsTasks(
+                    snapshotOrdinals.get(snapshot.snapshotId()),
+                    snapshot.snapshotId(),
+                    snapshot.sequenceNumber())));
+      }
+    }
+
+    return CloseableIterable.concat(taskIterables);
   }
 
   @Override
@@ -105,11 +150,6 @@ class BaseIncrementalChangelogScan
 
     for (Snapshot snapshot : SnapshotUtil.ancestorsBetween(table(), toIdIncl, fromIdExcl)) {
       if (!snapshot.operation().equals(DataOperations.REPLACE)) {
-        if (!snapshot.deleteManifests(table().io()).isEmpty()) {
-          throw new UnsupportedOperationException(
-              "Delete files are currently not supported in changelog scans");
-        }
-
         changelogSnapshots.addFirst(snapshot);
       }
     }
@@ -178,6 +218,60 @@ class BaseIncrementalChangelogScan
                 throw new IllegalArgumentException("Unexpected entry status: " + entry.status());
             }
           });
+    }
+  }
+
+  private static class CreateDeletedRowsTasks implements CreateTasksFunction<ChangelogScanTask> {
+    private final int changeOrdinal;
+    private final long commitSnapshotId;
+    private final long commitSequenceNumber;
+
+    private CreateDeletedRowsTasks(
+        int changeOrdinal, long commitSnapshotId, long commitSequenceNumber) {
+      this.changeOrdinal = changeOrdinal;
+      this.commitSnapshotId = commitSnapshotId;
+      this.commitSequenceNumber = commitSequenceNumber;
+    }
+
+    @Override
+    public CloseableIterable<ChangelogScanTask> apply(
+        CloseableIterable<ManifestEntry<DataFile>> entries, TaskContext context) {
+      return CloseableIterable.filter(
+          CloseableIterable.transform(entries, entry -> toDeletedRowsTask(entry, context)),
+          Objects::nonNull);
+    }
+
+    private ChangelogScanTask toDeletedRowsTask(
+        ManifestEntry<DataFile> entry, TaskContext context) {
+      DeleteFile[] deletes = context.deletes().forEntry(entry);
+      DeleteFile[] addedDeletes =
+          Arrays.stream(deletes).filter(this::committedInSnapshot).toArray(DeleteFile[]::new);
+      if (addedDeletes.length == 0) {
+        return null;
+      }
+
+      if (Arrays.stream(addedDeletes).anyMatch(ContentFileUtil::isDV)) {
+        throw new UnsupportedOperationException(
+            "Deletion vectors are currently not supported in changelog scans");
+      }
+
+      DeleteFile[] existingDeletes =
+          Arrays.stream(deletes)
+              .filter(delete -> !committedInSnapshot(delete))
+              .toArray(DeleteFile[]::new);
+      return new BaseDeletedRowsScanTask(
+          changeOrdinal,
+          commitSnapshotId,
+          entry.file().copy(context.shouldKeepStats()),
+          addedDeletes,
+          existingDeletes,
+          context.schemaAsString(),
+          context.specAsString(),
+          context.residuals());
+    }
+
+    private boolean committedInSnapshot(DeleteFile delete) {
+      return Long.valueOf(commitSequenceNumber).equals(delete.fileSequenceNumber());
     }
   }
 }

@@ -60,6 +60,33 @@ class TestSparkChangelog extends TestBaseWithCatalog {
   }
 
   @TestTemplate
+  void readsMergeOnReadDeletesUsingSparkCdcSyntax() {
+    sql(
+        "CREATE TABLE %s (id bigint, data string) USING iceberg "
+            + "TBLPROPERTIES ('format-version'='2', 'write.delete.mode'='merge-on-read')",
+        tableName);
+    sql("INSERT INTO %s VALUES (1, 'a'), (2, 'b')", tableName);
+    Table table = validationCatalog.loadTable(tableIdent);
+    long insertVersion = table.currentSnapshot().sequenceNumber();
+
+    sql("DELETE FROM %s WHERE id = 1", tableName);
+    table.refresh();
+    long deleteVersion = table.currentSnapshot().sequenceNumber();
+    assertThat(table.currentSnapshot().deleteManifests(table.io())).isNotEmpty();
+
+    assertThat(
+            sql(
+                "SELECT id, data, _change_type, _commit_version "
+                    + "FROM %s CHANGES FROM VERSION %d TO VERSION %d "
+                    + "ORDER BY _commit_version, id",
+                tableName, insertVersion, deleteVersion))
+        .containsExactly(
+            row(1L, "a", "insert", insertVersion),
+            row(2L, "b", "insert", insertVersion),
+            row(1L, "a", "delete", deleteVersion));
+  }
+
+  @TestTemplate
   void streamsChangesUsingSparkCdcApi() throws Exception {
     String queryName = "iceberg_cdc_changes";
     sql("CREATE TABLE %s (id bigint, data string) USING iceberg", tableName);

@@ -248,16 +248,63 @@ public class TestBaseIncrementalChangelogScan
   }
 
   @TestTemplate
-  public void testDeleteFilesAreNotSupported() {
+  public void testDeleteFiles() {
     assumeThat(formatVersion).isEqualTo(2);
 
     table.newFastAppend().appendFile(FILE_A2).appendFile(FILE_B).commit();
 
     table.newRowDelta().addDeletes(FILE_A2_DELETES).commit();
+    Snapshot deleteSnapshot = table.currentSnapshot();
+
+    List<ChangelogScanTask> tasks = plan(newScan());
+
+    assertThat(tasks).hasSize(3);
+    DeletedRowsScanTask deleteTask = (DeletedRowsScanTask) tasks.get(2);
+    assertThat(deleteTask.changeOrdinal()).isEqualTo(1);
+    assertThat(deleteTask.commitSnapshotId()).isEqualTo(deleteSnapshot.snapshotId());
+    assertThat(deleteTask.file().location()).isEqualTo(FILE_A2.location());
+    assertThat(deleteTask.addedDeletes()).hasSize(1);
+    assertThat(deleteTask.addedDeletes().get(0).location())
+        .isEqualTo(FILE_A2_DELETES.location());
+    assertThat(deleteTask.existingDeletes()).isEmpty();
+  }
+
+  @TestTemplate
+  public void testExistingDeleteFiles() {
+    assumeThat(formatVersion).isEqualTo(2);
+
+    table.newFastAppend().appendFile(FILE_A2).commit();
+    table.newRowDelta().addDeletes(FILE_A_EQUALITY_DELETES).commit();
+    Snapshot firstDeleteSnapshot = table.currentSnapshot();
+    table.newRowDelta().addDeletes(FILE_A2_DELETES).commit();
+    Snapshot secondDeleteSnapshot = table.currentSnapshot();
+
+    IncrementalChangelogScan scan =
+        newScan()
+            .fromSnapshotExclusive(firstDeleteSnapshot.snapshotId())
+            .toSnapshot(secondDeleteSnapshot.snapshotId());
+    List<ChangelogScanTask> tasks = plan(scan);
+
+    assertThat(tasks).hasSize(1);
+    DeletedRowsScanTask deleteTask = (DeletedRowsScanTask) Iterables.getOnlyElement(tasks);
+    assertThat(deleteTask.addedDeletes()).hasSize(1);
+    assertThat(deleteTask.addedDeletes().get(0).location())
+        .isEqualTo(FILE_A2_DELETES.location());
+    assertThat(deleteTask.existingDeletes()).hasSize(1);
+    assertThat(deleteTask.existingDeletes().get(0).location())
+        .isEqualTo(FILE_A_EQUALITY_DELETES.location());
+  }
+
+  @TestTemplate
+  public void testDeletionVectorsAreNotSupported() {
+    assumeThat(formatVersion).isGreaterThanOrEqualTo(3);
+
+    table.newFastAppend().appendFile(FILE_A).commit();
+    table.newRowDelta().addDeletes(FILE_A_DV).commit();
 
     assertThatThrownBy(() -> plan(newScan()))
         .isInstanceOf(UnsupportedOperationException.class)
-        .hasMessage("Delete files are currently not supported in changelog scans");
+        .hasMessage("Deletion vectors are currently not supported in changelog scans");
   }
 
   // plans tasks and reorders them to have deterministic order

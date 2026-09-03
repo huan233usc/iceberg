@@ -25,6 +25,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Function;
+import java.util.function.Predicate;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -43,7 +44,9 @@ import org.apache.iceberg.data.BaseDeleteLoader;
 import org.apache.iceberg.data.DeleteFilter;
 import org.apache.iceberg.data.DeleteLoader;
 import org.apache.iceberg.deletes.DeleteCounter;
+import org.apache.iceberg.deletes.PositionDeleteIndex;
 import org.apache.iceberg.encryption.EncryptingFileIO;
+import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.CloseableIterator;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.io.InputFile;
@@ -204,7 +207,16 @@ abstract class BaseReader<T, TaskT extends ScanTask> implements Closeable {
 
     SparkDeleteFilter(
         String filePath, List<DeleteFile> deletes, DeleteCounter counter, boolean needRowPosCol) {
-      super(filePath, deletes, new FieldLookup(table), expectedSchema, counter, needRowPosCol);
+      this(filePath, deletes, expectedSchema, counter, needRowPosCol);
+    }
+
+    SparkDeleteFilter(
+        String filePath,
+        List<DeleteFile> deletes,
+        Schema filterSchema,
+        DeleteCounter counter,
+        boolean needRowPosCol) {
+      super(filePath, deletes, new FieldLookup(table), filterSchema, counter, needRowPosCol);
       this.asStructLike =
           new InternalRowWrapper(
               SparkSchemaUtil.convert(requiredSchema()), requiredSchema().asStruct());
@@ -226,6 +238,14 @@ abstract class BaseReader<T, TaskT extends ScanTask> implements Closeable {
         row.setBoolean(columnIsDeletedPosition(), true);
         counter().increment();
       }
+    }
+
+    CloseableIterable<InternalRow> findDeletedRows(CloseableIterable<InternalRow> rows) {
+      Predicate<InternalRow> isEqDeleted = eqDeletedRowFilter().negate();
+      PositionDeleteIndex positionIndex = deletedRowPositions();
+      Predicate<InternalRow> isPosDeleted =
+          positionIndex != null ? row -> positionIndex.isDeleted(pos(row)) : row -> false;
+      return CloseableIterable.filter(rows, isEqDeleted.or(isPosDeleted));
     }
 
     @Override
