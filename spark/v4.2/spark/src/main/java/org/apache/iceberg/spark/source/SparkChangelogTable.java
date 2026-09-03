@@ -56,8 +56,7 @@ import org.apache.spark.sql.util.CaseInsensitiveStringMap;
  *
  * <p>The Table API keeps Iceberg's changelog columns ({@code _change_type}, {@code
  * _change_ordinal}, {@code _commit_snapshot_id}). The Changelog API maps those onto Spark CDC
- * columns ({@code _change_type}, {@code _commit_version}, {@code _commit_timestamp}). {@link
- * ChangelogContext} is only set when this object is returned from {@code loadChangelog}.
+ * columns ({@code _change_type}, {@code _commit_version}, {@code _commit_timestamp}).
  */
 public class SparkChangelogTable
     implements org.apache.spark.sql.connector.catalog.Table,
@@ -88,7 +87,7 @@ public class SparkChangelogTable
 
   private final Table table;
   private final Schema icebergChangelogSchema;
-  private final ChangelogContext context;
+  private final RangeOptions rangeOptions;
   private final Schema sparkCdcSchema;
   private final Column[] sparkCdcColumns;
   private final Set<String> identifierFields;
@@ -97,13 +96,17 @@ public class SparkChangelogTable
   private StructType lazySparkSchema = null;
 
   public SparkChangelogTable(Table table) {
-    this(table, null);
+    this(table, RangeOptions.icebergChangelog());
   }
 
   public SparkChangelogTable(Table table, ChangelogContext context) {
+    this(table, rangeOptions(table, context));
+  }
+
+  private SparkChangelogTable(Table table, RangeOptions rangeOptions) {
     this.table = table;
     this.icebergChangelogSchema = ChangelogUtil.changelogSchema(table.schema());
-    this.context = context;
+    this.rangeOptions = rangeOptions;
     this.sparkCdcSchema =
         TypeUtil.join(
             table.schema(),
@@ -128,7 +131,9 @@ public class SparkChangelogTable
 
   @Override
   public Column[] columns() {
-    return context != null ? sparkCdcColumns : toColumns(icebergChangelogSchema);
+    return rangeOptions.readMode().isSparkCdc()
+        ? sparkCdcColumns
+        : toColumns(icebergChangelogSchema);
   }
 
   @Override
@@ -162,20 +167,19 @@ public class SparkChangelogTable
 
   @Override
   public ScanBuilder newScanBuilder(CaseInsensitiveStringMap options) {
-    if (context == null) {
+    if (!rangeOptions.readMode().isSparkCdc()) {
       return new SparkChangelogScanBuilder(spark(), table, icebergChangelogSchema, options);
     }
 
-    RangeOptions range = rangeOptions();
     Map<String, String> scanOptions = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
     scanOptions.putAll(options.asCaseSensitiveMap());
-    scanOptions.putAll(range.options());
+    scanOptions.putAll(rangeOptions.options());
     return new SparkChangelogScanBuilder(
         spark(),
         table,
         sparkCdcSchema,
         new CaseInsensitiveStringMap(scanOptions),
-        range.readMode());
+        rangeOptions.readMode());
   }
 
   private SparkSession spark() {
@@ -197,31 +201,35 @@ public class SparkChangelogTable
     };
   }
 
-  private RangeOptions rangeOptions() {
+  private static RangeOptions rangeOptions(Table table, ChangelogContext context) {
     ChangelogRange range = context.range();
     if (range instanceof ChangelogRange.UnboundedRange) {
       return RangeOptions.scan(Collections.emptyMap());
     } else if (range instanceof ChangelogRange.VersionRange) {
-      return versionRangeOptions((ChangelogRange.VersionRange) range);
+      return versionRangeOptions(table, (ChangelogRange.VersionRange) range);
     } else if (range instanceof ChangelogRange.TimestampRange) {
-      return timestampRangeOptions((ChangelogRange.TimestampRange) range);
+      return timestampRangeOptions(table, (ChangelogRange.TimestampRange) range);
     } else {
       throw new UnsupportedOperationException("Unsupported Spark changelog range: " + range);
     }
   }
 
-  private RangeOptions versionRangeOptions(ChangelogRange.VersionRange range) {
-    Snapshot start = snapshotWithSequenceNumber(range.startingVersion());
+  private static RangeOptions versionRangeOptions(Table table, ChangelogRange.VersionRange range) {
+    Snapshot start = snapshotWithSequenceNumber(table, range.startingVersion());
     Snapshot end =
-        range.endingVersion().map(this::snapshotWithSequenceNumber).orElse(table.currentSnapshot());
+        range
+            .endingVersion()
+            .map(version -> snapshotWithSequenceNumber(table, version))
+            .orElse(table.currentSnapshot());
 
     Long startExclusive = range.startingBoundInclusive() ? start.parentId() : start.snapshotId();
     Long endInclusive = range.endingBoundInclusive() ? end.snapshotId() : end.parentId();
-    return snapshotRangeOptions(startExclusive, endInclusive);
+    return snapshotRangeOptions(table, startExclusive, endInclusive);
   }
 
-  private RangeOptions timestampRangeOptions(ChangelogRange.TimestampRange range) {
-    List<Snapshot> snapshots = currentAncestorsInCommitOrder();
+  private static RangeOptions timestampRangeOptions(
+      Table table, ChangelogRange.TimestampRange range) {
+    List<Snapshot> snapshots = currentAncestorsInCommitOrder(table);
     Snapshot start =
         snapshots.stream()
             .filter(
@@ -246,10 +254,11 @@ public class SparkChangelogTable
       return RangeOptions.empty();
     }
 
-    return snapshotRangeOptions(start.parentId(), end.snapshotId());
+    return snapshotRangeOptions(table, start.parentId(), end.snapshotId());
   }
 
-  private RangeOptions snapshotRangeOptions(Long startExclusive, Long endInclusive) {
+  private static RangeOptions snapshotRangeOptions(
+      Table table, Long startExclusive, Long endInclusive) {
     if (endInclusive == null) {
       return RangeOptions.empty();
     }
@@ -274,7 +283,7 @@ public class SparkChangelogTable
     return RangeOptions.scan(options);
   }
 
-  private Snapshot snapshotWithSequenceNumber(String version) {
+  private static Snapshot snapshotWithSequenceNumber(Table table, String version) {
     long sequenceNumber;
     try {
       sequenceNumber = Long.parseLong(version);
@@ -291,7 +300,7 @@ public class SparkChangelogTable
                     "Cannot find Iceberg snapshot with sequence number: " + version));
   }
 
-  private List<Snapshot> currentAncestorsInCommitOrder() {
+  private static List<Snapshot> currentAncestorsInCommitOrder(Table table) {
     List<Snapshot> snapshots = Lists.newArrayList(SnapshotUtil.currentAncestors(table));
     Collections.reverse(snapshots);
     return snapshots;
@@ -311,6 +320,10 @@ public class SparkChangelogTable
     private RangeOptions(Map<String, String> options, SparkChangelogReadMode readMode) {
       this.options = options;
       this.readMode = readMode;
+    }
+
+    private static RangeOptions icebergChangelog() {
+      return new RangeOptions(Collections.emptyMap(), SparkChangelogReadMode.ICEBERG_CHANGELOG);
     }
 
     private static RangeOptions scan(Map<String, String> options) {
