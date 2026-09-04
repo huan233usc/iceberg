@@ -18,21 +18,16 @@
  */
 package org.apache.iceberg.spark.source;
 
-import java.io.IOException;
-import java.io.UncheckedIOException;
 import java.util.List;
 import org.apache.iceberg.ChangelogScanTask;
-import org.apache.iceberg.ChangelogUtil;
-import org.apache.iceberg.IncrementalChangelogScan;
 import org.apache.iceberg.ScanTaskGroup;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.SchemaParser;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.Table;
-import org.apache.iceberg.io.CloseableIterable;
+import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.io.FileIO;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
-import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.spark.SparkReadConf;
 import org.apache.iceberg.types.Types;
 import org.apache.spark.api.java.JavaSparkContext;
@@ -101,22 +96,11 @@ class SparkChangelogMicroBatchStream implements MicroBatchStream {
       return new InputPartition[0];
     }
 
-    IncrementalChangelogScan scan =
-        table
-            .newIncrementalChangelogScan()
-            .caseSensitive(readConf.caseSensitive())
-            .project(ChangelogUtil.changelogSchema(table.schema()));
-    if (!startOffset.equals(StreamingOffset.START_OFFSET)) {
-      scan = scan.fromSnapshotExclusive(startOffset.snapshotId());
-    }
-    scan = scan.toSnapshot(endOffset.snapshotId());
-
-    List<ScanTaskGroup<ChangelogScanTask>> taskGroups;
-    try (CloseableIterable<ScanTaskGroup<ChangelogScanTask>> groups = scan.planTasks()) {
-      taskGroups = Lists.newArrayList(groups);
-    } catch (IOException e) {
-      throw new UncheckedIOException("Failed to close Iceberg changelog task groups", e);
-    }
+    Long startSnapshotId =
+        startOffset.equals(StreamingOffset.START_OFFSET) ? null : startOffset.snapshotId();
+    List<ScanTaskGroup<ChangelogScanTask>> taskGroups =
+        new SparkCdcScanPlanner(table, readConf, Expressions.alwaysTrue())
+            .planTasks(startSnapshotId, endOffset.snapshotId());
 
     Broadcast<Table> tableBroadcast =
         sparkContext.broadcast(SerializableTableWithSize.copyOf(table));

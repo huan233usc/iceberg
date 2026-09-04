@@ -30,6 +30,7 @@ import org.apache.iceberg.ScanTaskGroup;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.expressions.Expression;
+import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.spark.Spark3Util;
@@ -77,6 +78,8 @@ class SparkChangelogScan implements Scan, SupportsReportStatistics {
         readConf,
         projection,
         filters,
+        readConf.startSnapshotId(),
+        readConf.endSnapshotId(),
         SparkChangelogReadMode.ICEBERG_CHANGELOG);
   }
 
@@ -87,6 +90,8 @@ class SparkChangelogScan implements Scan, SupportsReportStatistics {
       SparkReadConf readConf,
       Schema projection,
       List<Expression> filters,
+      Long startSnapshotId,
+      Long endSnapshotId,
       SparkChangelogReadMode readMode) {
     SparkSchemaUtil.validateMetadataColumnReferences(table.schema(), projection);
 
@@ -96,10 +101,10 @@ class SparkChangelogScan implements Scan, SupportsReportStatistics {
     this.readConf = readConf;
     this.projection = projection;
     this.filters = filters != null ? filters : Collections.emptyList();
-    this.startSnapshotId = readConf.startSnapshotId();
-    this.endSnapshotId = readConf.endSnapshotId();
+    this.startSnapshotId = startSnapshotId;
+    this.endSnapshotId = endSnapshotId;
     this.readMode = readMode;
-    if (scan == null) {
+    if (readMode.isEmpty() || (scan == null && !readMode.isSparkCdc())) {
       this.taskGroups = Collections.emptyList();
     }
   }
@@ -145,10 +150,18 @@ class SparkChangelogScan implements Scan, SupportsReportStatistics {
 
   private List<ScanTaskGroup<ChangelogScanTask>> taskGroups() {
     if (taskGroups == null) {
-      try (CloseableIterable<ScanTaskGroup<ChangelogScanTask>> groups = scan.planTasks()) {
-        this.taskGroups = Lists.newArrayList(groups);
-      } catch (IOException e) {
-        throw new UncheckedIOException("Failed to close changelog scan: " + scan, e);
+      if (readMode.isSparkCdc()) {
+        Expression filter =
+            filters.stream().reduce(Expressions.alwaysTrue(), Expressions::and);
+        this.taskGroups =
+            new SparkCdcScanPlanner(table, readConf, filter)
+                .planTasks(startSnapshotId, endSnapshotId);
+      } else {
+        try (CloseableIterable<ScanTaskGroup<ChangelogScanTask>> groups = scan.planTasks()) {
+          this.taskGroups = Lists.newArrayList(groups);
+        } catch (IOException e) {
+          throw new UncheckedIOException("Failed to close changelog scan: " + scan, e);
+        }
       }
     }
 

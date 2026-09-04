@@ -87,10 +87,77 @@ class TestSparkChangelog extends TestBaseWithCatalog {
   }
 
   @TestTemplate
+  void doesNotRepeatDeletesFromEarlierSnapshots() {
+    sql(
+        "CREATE TABLE %s (id bigint, data string) USING iceberg "
+            + "TBLPROPERTIES ('format-version'='2', 'write.delete.mode'='merge-on-read')",
+        tableName);
+    sql("INSERT INTO %s VALUES (1, 'a'), (2, 'b'), (3, 'c')", tableName);
+
+    sql("DELETE FROM %s WHERE id = 1", tableName);
+    Table table = validationCatalog.loadTable(tableIdent);
+    long firstDeleteVersion = table.currentSnapshot().sequenceNumber();
+
+    sql("DELETE FROM %s WHERE id = 2", tableName);
+    table.refresh();
+    long secondDeleteVersion = table.currentSnapshot().sequenceNumber();
+
+    assertThat(
+            sql(
+                "SELECT id, _change_type, _commit_version "
+                    + "FROM %s CHANGES FROM VERSION %d TO VERSION %d "
+                    + "ORDER BY _commit_version, id",
+                tableName, firstDeleteVersion, secondDeleteVersion))
+        .containsExactly(
+            row(1L, "delete", firstDeleteVersion),
+            row(2L, "delete", secondDeleteVersion));
+  }
+
+  @TestTemplate
+  void readsMixedMergeOnReadAndCopyOnWriteChanges() {
+    sql(
+        "CREATE TABLE %s (id bigint, data string) USING iceberg "
+            + "TBLPROPERTIES ('format-version'='2', 'write.delete.mode'='merge-on-read')",
+        tableName);
+    sql("INSERT INTO %s VALUES (1, 'a'), (2, 'b'), (3, 'c')", tableName);
+    Table table = validationCatalog.loadTable(tableIdent);
+    long insertVersion = table.currentSnapshot().sequenceNumber();
+
+    sql("DELETE FROM %s WHERE id = 1", tableName);
+    table.refresh();
+    long mergeOnReadVersion = table.currentSnapshot().sequenceNumber();
+    sql(
+        "ALTER TABLE %s SET TBLPROPERTIES ('write.delete.mode'='copy-on-write')",
+        tableName);
+    sql("DELETE FROM %s WHERE id = 2", tableName);
+    table.refresh();
+    long copyOnWriteVersion = table.currentSnapshot().sequenceNumber();
+
+    assertThat(
+            sql(
+                "SELECT id, data, _change_type, _commit_version "
+                    + "FROM %s CHANGES FROM VERSION %d TO VERSION %d "
+                    + "ORDER BY _commit_version, _change_type, id",
+                tableName, insertVersion, copyOnWriteVersion))
+        .containsExactly(
+            row(1L, "a", "insert", insertVersion),
+            row(2L, "b", "insert", insertVersion),
+            row(3L, "c", "insert", insertVersion),
+            row(1L, "a", "delete", mergeOnReadVersion),
+            row(2L, "b", "delete", copyOnWriteVersion),
+            row(3L, "c", "delete", copyOnWriteVersion),
+            row(3L, "c", "insert", copyOnWriteVersion));
+  }
+
+  @TestTemplate
   void streamsChangesUsingSparkCdcApi() throws Exception {
     String queryName = "iceberg_cdc_changes";
-    sql("CREATE TABLE %s (id bigint, data string) USING iceberg", tableName);
+    sql(
+        "CREATE TABLE %s (id bigint, data string) USING iceberg "
+            + "TBLPROPERTIES ('format-version'='2', 'write.delete.mode'='merge-on-read')",
+        tableName);
     sql("INSERT INTO %s VALUES (1, 'a'), (2, 'b')", tableName);
+    sql("DELETE FROM %s WHERE id = 1", tableName);
 
     Dataset<Row> changes = spark.readStream().changes(tableName);
     StreamingQuery query =
@@ -102,8 +169,15 @@ class TestSparkChangelog extends TestBaseWithCatalog {
             .start();
     query.awaitTermination();
 
-    assertThat(sql("SELECT id, data, _change_type FROM %s ORDER BY id", queryName))
-        .containsExactly(row(1L, "a", "insert"), row(2L, "b", "insert"));
+    assertThat(
+            sql(
+                "SELECT id, data, _change_type FROM %s "
+                    + "ORDER BY _commit_version, _change_type, id",
+                queryName))
+        .containsExactly(
+            row(1L, "a", "insert"),
+            row(2L, "b", "insert"),
+            row(1L, "a", "delete"));
     spark.catalog().dropTempView(queryName);
   }
 

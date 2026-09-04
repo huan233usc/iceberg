@@ -92,7 +92,12 @@ class ChangelogRowReader extends BaseRowReader<ChangelogScanTask>
     cdcRow.withRight(changelogMetadata(task));
 
     CloseableIterable<InternalRow> rows = openChangelogScanTask(task);
-    CloseableIterable<InternalRow> cdcRows = CloseableIterable.transform(rows, cdcRow::withLeft);
+    UnsafeProjection projection =
+        UnsafeProjection.create(SparkSchemaUtil.convert(expectedSchema()));
+    CloseableIterable<InternalRow> projectedRows =
+        CloseableIterable.transform(rows, projection::apply);
+    CloseableIterable<InternalRow> cdcRows =
+        CloseableIterable.transform(projectedRows, cdcRow::withLeft);
 
     return cdcRows.iterator();
   }
@@ -168,10 +173,7 @@ class ChangelogRowReader extends BaseRowReader<ChangelogScanTask>
 
     CloseableIterable<InternalRow> existingRows =
         existingDeleteFilter.filter(rows(task, readSchema));
-    CloseableIterable<InternalRow> deletedRows = addedDeleteFilter.findDeletedRows(existingRows);
-    UnsafeProjection projection =
-        UnsafeProjection.create(SparkSchemaUtil.convert(expectedSchema()));
-    return CloseableIterable.transform(deletedRows, projection::apply);
+    return addedDeleteFilter.findDeletedRows(existingRows);
   }
 
   private CloseableIterable<InternalRow> openDeletedDataFileScanTask(DeletedDataFileScanTask task) {

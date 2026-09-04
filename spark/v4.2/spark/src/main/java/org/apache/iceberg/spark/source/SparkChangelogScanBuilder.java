@@ -18,7 +18,6 @@
  */
 package org.apache.iceberg.spark.source;
 
-import org.apache.iceberg.ChangelogUtil;
 import org.apache.iceberg.IncrementalChangelogScan;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Snapshot;
@@ -109,12 +108,20 @@ public class SparkChangelogScanBuilder extends BaseSparkScanBuilder
     }
 
     Schema readProjection = projectionWithMetadataColumns();
-    Schema scanProjection =
-        readMode.isSparkCdc() ? ChangelogUtil.changelogSchema(table().schema()) : readProjection;
     IncrementalChangelogScan scan =
-        buildIcebergScan(scanProjection, startSnapshotId, endSnapshotId);
+        readMode.isSparkCdc()
+            ? null
+            : buildIcebergScan(readProjection, startSnapshotId, endSnapshotId);
     return new SparkChangelogScan(
-        spark(), table(), scan, readConf(), readProjection, filters(), readMode);
+        spark(),
+        table(),
+        scan,
+        readConf(),
+        readProjection,
+        filters(),
+        startSnapshotId,
+        endSnapshotId,
+        readMode);
   }
 
   private IncrementalChangelogScan buildIcebergScan(
@@ -148,6 +155,8 @@ public class SparkChangelogScanBuilder extends BaseSparkScanBuilder
         readConf(),
         projectionWithMetadataColumns(),
         filters(),
+        null,
+        null,
         readMode);
   }
 
