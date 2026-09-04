@@ -30,6 +30,7 @@ import org.apache.iceberg.ScanTaskGroup;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.Table;
 import org.apache.iceberg.expressions.Expression;
+import org.apache.iceberg.expressions.Expressions;
 import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.spark.Spark3Util;
@@ -42,6 +43,7 @@ import org.apache.spark.sql.connector.read.Batch;
 import org.apache.spark.sql.connector.read.Scan;
 import org.apache.spark.sql.connector.read.Statistics;
 import org.apache.spark.sql.connector.read.SupportsReportStatistics;
+import org.apache.spark.sql.connector.read.streaming.MicroBatchStream;
 import org.apache.spark.sql.types.StructType;
 
 class SparkChangelogScan implements Scan, SupportsReportStatistics {
@@ -56,6 +58,7 @@ class SparkChangelogScan implements Scan, SupportsReportStatistics {
   private final List<Expression> filters;
   private final Long startSnapshotId;
   private final Long endSnapshotId;
+  private final SparkChangelogReadMode readMode;
 
   // lazy variables
   private List<ScanTaskGroup<ChangelogScanTask>> taskGroups = null;
@@ -68,7 +71,28 @@ class SparkChangelogScan implements Scan, SupportsReportStatistics {
       SparkReadConf readConf,
       Schema projection,
       List<Expression> filters) {
+    this(
+        spark,
+        table,
+        scan,
+        readConf,
+        projection,
+        filters,
+        readConf.startSnapshotId(),
+        readConf.endSnapshotId(),
+        SparkChangelogReadMode.ICEBERG_CHANGELOG);
+  }
 
+  SparkChangelogScan(
+      SparkSession spark,
+      Table table,
+      IncrementalChangelogScan scan,
+      SparkReadConf readConf,
+      Schema projection,
+      List<Expression> filters,
+      Long startSnapshotId,
+      Long endSnapshotId,
+      SparkChangelogReadMode readMode) {
     SparkSchemaUtil.validateMetadataColumnReferences(table.schema(), projection);
 
     this.sparkContext = JavaSparkContext.fromSparkContext(spark.sparkContext());
@@ -77,9 +101,10 @@ class SparkChangelogScan implements Scan, SupportsReportStatistics {
     this.readConf = readConf;
     this.projection = projection;
     this.filters = filters != null ? filters : Collections.emptyList();
-    this.startSnapshotId = readConf.startSnapshotId();
-    this.endSnapshotId = readConf.endSnapshotId();
-    if (scan == null) {
+    this.startSnapshotId = startSnapshotId;
+    this.endSnapshotId = endSnapshotId;
+    this.readMode = readMode;
+    if (readMode.isEmpty() || (scan == null && !readMode.isSparkCdc())) {
       this.taskGroups = Collections.emptyList();
     }
   }
@@ -113,12 +138,30 @@ class SparkChangelogScan implements Scan, SupportsReportStatistics {
         hashCode());
   }
 
+  @Override
+  public MicroBatchStream toMicroBatchStream(String checkpointLocation) {
+    if (!readMode.isSparkCdc()) {
+      throw new UnsupportedOperationException("Changelog streaming is only supported through CDC");
+    }
+
+    return new SparkChangelogMicroBatchStream(
+        sparkContext, table, readConf, projection, checkpointLocation);
+  }
+
   private List<ScanTaskGroup<ChangelogScanTask>> taskGroups() {
     if (taskGroups == null) {
-      try (CloseableIterable<ScanTaskGroup<ChangelogScanTask>> groups = scan.planTasks()) {
-        this.taskGroups = Lists.newArrayList(groups);
-      } catch (IOException e) {
-        throw new UncheckedIOException("Failed to close changelog scan: " + scan, e);
+      if (readMode.isSparkCdc()) {
+        Expression filter =
+            filters.stream().reduce(Expressions.alwaysTrue(), Expressions::and);
+        this.taskGroups =
+            new SparkCdcScanPlanner(table, readConf, filter)
+                .planTasks(startSnapshotId, endSnapshotId);
+      } else {
+        try (CloseableIterable<ScanTaskGroup<ChangelogScanTask>> groups = scan.planTasks()) {
+          this.taskGroups = Lists.newArrayList(groups);
+        } catch (IOException e) {
+          throw new UncheckedIOException("Failed to close changelog scan: " + scan, e);
+        }
       }
     }
 
