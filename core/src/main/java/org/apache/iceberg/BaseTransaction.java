@@ -536,7 +536,24 @@ public class BaseTransaction implements Transaction {
 
     @Override
     public TableScan newScan() {
-      throw new UnsupportedOperationException("Transaction tables do not support scans");
+      return new DataTableScan(
+          this, schema(), ImmutableTableScanContext.builder().metricsReporter(reporter).build());
+    }
+
+    @Override
+    public IncrementalAppendScan newIncrementalAppendScan() {
+      return new BaseIncrementalAppendScan(
+          this, schema(), ImmutableTableScanContext.builder().metricsReporter(reporter).build());
+    }
+
+    @Override
+    public IncrementalChangelogScan newIncrementalChangelogScan() {
+      return new BaseIncrementalChangelogScan(this);
+    }
+
+    @Override
+    public PartitionStatisticsScan newPartitionStatisticsScan() {
+      return new BasePartitionStatisticsScan(this);
     }
 
     @Override

@@ -35,6 +35,7 @@ import java.util.stream.Collectors;
 import org.apache.iceberg.ManifestEntry.Status;
 import org.apache.iceberg.exceptions.CommitFailedException;
 import org.apache.iceberg.exceptions.CommitStateUnknownException;
+import org.apache.iceberg.io.CloseableIterable;
 import org.apache.iceberg.io.OutputFile;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
@@ -59,6 +60,18 @@ public class TestTransaction extends TestBase {
 
     assertThat(readMetadata()).isSameAs(base);
     assertThat(version()).isEqualTo(0);
+  }
+
+  @TestTemplate
+  public void testTransactionTableScan() throws IOException {
+    table.newAppend().appendFile(FILE_A).commit();
+
+    Transaction txn = table.newTransaction();
+    try (CloseableIterable<FileScanTask> tasks = txn.table().newScan().planFiles()) {
+      assertThat(tasks)
+          .extracting(task -> task.file().location())
+          .containsExactly(FILE_A.location());
+    }
   }
 
   @TestTemplate

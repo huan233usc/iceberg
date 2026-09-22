@@ -32,6 +32,7 @@ import org.apache.iceberg.exceptions.AlreadyExistsException;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.spark.source.HasIcebergCatalog;
+import org.apache.iceberg.spark.source.SparkTransaction;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.catalyst.analysis.NamespaceAlreadyExistsException;
 import org.apache.spark.sql.catalyst.analysis.NoSuchFunctionException;
@@ -53,8 +54,10 @@ import org.apache.spark.sql.connector.catalog.Table;
 import org.apache.spark.sql.connector.catalog.TableCatalog;
 import org.apache.spark.sql.connector.catalog.TableChange;
 import org.apache.spark.sql.connector.catalog.TableSummary;
+import org.apache.spark.sql.connector.catalog.TransactionalCatalogPlugin;
 import org.apache.spark.sql.connector.catalog.View;
 import org.apache.spark.sql.connector.catalog.ViewCatalog;
+import org.apache.spark.sql.connector.catalog.transactions.TransactionInfo;
 import org.apache.spark.sql.connector.catalog.functions.UnboundFunction;
 import org.apache.spark.sql.connector.expressions.Transform;
 import org.apache.spark.sql.types.StructType;
@@ -68,7 +71,7 @@ import org.apache.spark.sql.util.CaseInsensitiveStringMap;
  */
 public class SparkSessionCatalog<
         T extends TableCatalog & FunctionCatalog & SupportsNamespaces & ViewCatalog>
-    extends BaseCatalog implements CatalogExtension {
+    extends BaseCatalog implements CatalogExtension, TransactionalCatalogPlugin {
   private static final String[] DEFAULT_NAMESPACE = new String[] {"default"};
 
   private String catalogName = null;
@@ -204,6 +207,12 @@ public class SparkSessionCatalog<
     } catch (NoSuchTableException e) {
       return getSessionCatalog().loadTable(ident);
     }
+  }
+
+  @Override
+  public org.apache.spark.sql.connector.catalog.transactions.Transaction beginTransaction(
+      TransactionInfo info) {
+    return new SparkTransaction(this);
   }
 
   @Override
