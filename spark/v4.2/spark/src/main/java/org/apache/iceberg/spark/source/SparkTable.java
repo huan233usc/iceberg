@@ -23,6 +23,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Consumer;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.DeleteFiles;
 import org.apache.iceberg.FileScanTask;
@@ -65,6 +66,7 @@ import org.apache.spark.sql.connector.catalog.TableCapability;
 import org.apache.spark.sql.connector.catalog.constraints.Constraint;
 import org.apache.spark.sql.connector.catalog.constraints.Constraint.ValidationStatus;
 import org.apache.spark.sql.connector.expressions.filter.Predicate;
+import org.apache.spark.sql.connector.read.Scan;
 import org.apache.spark.sql.connector.read.ScanBuilder;
 import org.apache.spark.sql.connector.write.LogicalWriteInfo;
 import org.apache.spark.sql.connector.write.RowLevelOperationBuilder;
@@ -98,8 +100,8 @@ public class SparkTable extends BaseSparkTable
   private final String branch; // set if table is loaded for specific branch
   private final TimeTravel timeTravel; // set if table is loaded for time travel
   private final Set<TableCapability> capabilities;
-  private final Runnable readListener;
-  private final Runnable writeListener;
+  private final Consumer<Scan> recordScanRead;
+  private final Runnable activateWrite;
 
   public SparkTable(Table table) {
     this(table, null /* main branch */);
@@ -125,7 +127,7 @@ public class SparkTable extends BaseSparkTable
 
   private SparkTable(
       Table table, Schema schema, Snapshot snapshot, String branch, TimeTravel timeTravel) {
-    this(table, schema, snapshot, branch, timeTravel, () -> {}, () -> {});
+    this(table, schema, snapshot, branch, timeTravel, scan -> {}, () -> {});
   }
 
   private SparkTable(
@@ -134,25 +136,26 @@ public class SparkTable extends BaseSparkTable
       Snapshot snapshot,
       String branch,
       TimeTravel timeTravel,
-      Runnable readListener,
-      Runnable writeListener) {
+      Consumer<Scan> recordScanRead,
+      Runnable activateWrite) {
     super(table, schema);
     this.schema = schema;
     this.snapshot = snapshot;
     this.branch = branch;
     this.timeTravel = timeTravel;
     this.capabilities = computeCapabilities(table);
-    this.readListener = readListener;
-    this.writeListener = writeListener;
+    this.recordScanRead = recordScanRead;
+    this.activateWrite = activateWrite;
   }
 
   public SparkTable copyWithBranch(String newBranch) {
     SparkTable copy = new SparkTable(table(), newBranch);
-    return copy.copyWithTable(table(), readListener, writeListener);
+    return copy.copyWithTable(table(), recordScanRead, activateWrite);
   }
 
-  SparkTable copyWithTable(Table newTable, Runnable onRead, Runnable onWrite) {
-    return new SparkTable(newTable, schema, snapshot, branch, timeTravel, onRead, onWrite);
+  SparkTable copyWithTable(Table newTable, Consumer<Scan> onScanRead, Runnable onActivateWrite) {
+    return new SparkTable(
+        newTable, schema, snapshot, branch, timeTravel, onScanRead, onActivateWrite);
   }
 
   public Long snapshotId() {
@@ -199,28 +202,27 @@ public class SparkTable extends BaseSparkTable
 
   @Override
   public ScanBuilder newScanBuilder(CaseInsensitiveStringMap options) {
-    readListener.run();
-    return new SparkScanBuilder(spark(), table(), schema, snapshot, branch, timeTravel, options);
+    return new SparkScanBuilder(
+        spark(), table(), schema, snapshot, branch, timeTravel, options, recordScanRead);
   }
 
   @Override
   public WriteBuilder newWriteBuilder(LogicalWriteInfo info) {
     Preconditions.checkArgument(timeTravel == null, "Cannot write to table with time travel");
-    writeListener.run();
+    activateWrite.run();
     return new SparkWriteBuilder(spark(), table(), branch, info);
   }
 
   @Override
   public RowLevelOperationBuilder newRowLevelOperationBuilder(RowLevelOperationInfo info) {
     Preconditions.checkArgument(timeTravel == null, "Cannot modify table with time travel");
-    writeListener.run();
-    return new SparkRowLevelOperationBuilder(spark(), table(), snapshot, branch, info);
+    return new SparkRowLevelOperationBuilder(
+        spark(), table(), snapshot, branch, info, recordScanRead, activateWrite);
   }
 
   @Override
   public boolean canDeleteWhere(Predicate[] predicates) {
     Preconditions.checkArgument(timeTravel == null, "Cannot delete from table with time travel");
-    readListener.run();
 
     Expression deleteExpr = Expressions.alwaysTrue();
 
@@ -286,7 +288,7 @@ public class SparkTable extends BaseSparkTable
 
   @Override
   public void deleteWhere(Predicate[] predicates) {
-    writeListener.run();
+    activateWrite.run();
     Expression deleteExpr = SparkV2Filters.convert(predicates);
 
     if (deleteExpr == Expressions.alwaysFalse()) {

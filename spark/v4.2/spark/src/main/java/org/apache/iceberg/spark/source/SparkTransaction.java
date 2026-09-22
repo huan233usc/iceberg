@@ -9,14 +9,18 @@
  *
  *   http://www.apache.org/licenses/LICENSE-2.0
  *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
+ * Unless required by applicable law or agreed to in writing,
+ * software distributed under the License is distributed on an
+ * "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+ * KIND, either express or implied.  See the License for the
+ * specific language governing permissions and limitations
+ * under the License.
  */
 package org.apache.iceberg.spark.source;
 
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -156,10 +160,7 @@ public class SparkTransaction
 
     @Override
     public Table createTable(
-        Identifier ident,
-        StructType schema,
-        Transform[] partitions,
-        Map<String, String> properties)
+        Identifier ident, StructType schema, Transform[] partitions, Map<String, String> properties)
         throws TableAlreadyExistsException, NoSuchNamespaceException {
       return delegate.createTable(ident, schema, partitions, properties);
     }
@@ -214,7 +215,7 @@ public class SparkTransaction
       PinnedTable pinned = new PinnedTable(sparkTable, icebergTransaction);
       pinned.setSparkTable(
           sparkTable.copyWithTable(
-              icebergTransaction.table(), pinned::markRead, pinned::markWrite));
+              icebergTransaction.table(), pinned::recordScanRead, pinned::activateWrite));
       return pinned;
     }
 
@@ -239,16 +240,31 @@ public class SparkTransaction
         routed[index] = match;
       }
 
-      for (PinnedTable table : routed) {
-        table.markRead();
+      for (int index = 0; index < routed.length; index += 1) {
+        routed[index].recordScanRead(scans[index]);
       }
 
       return true;
     }
 
     private void commit() {
-      tables.values().forEach(PinnedTable::validateReadSnapshot);
-      tables.values().forEach(PinnedTable::commit);
+      List<PinnedTable> writeTables = writeTables();
+      writeTables.forEach(PinnedTable::validateReadSnapshot);
+      writeTables.forEach(PinnedTable::commit);
+    }
+
+    private List<PinnedTable> writeTables() {
+      List<Map.Entry<Identifier, PinnedTable>> entries = new ArrayList<>(tables.entrySet());
+      entries.sort(Comparator.comparing(entry -> entry.getKey().toString()));
+
+      List<PinnedTable> writeTables = new ArrayList<>();
+      for (Map.Entry<Identifier, PinnedTable> entry : entries) {
+        if (entry.getValue().writeActive()) {
+          writeTables.add(entry.getValue());
+        }
+      }
+
+      return writeTables;
     }
 
     private void close() {
@@ -259,9 +275,9 @@ public class SparkTransaction
   private static class PinnedTable {
     private final SparkTable original;
     private final org.apache.iceberg.Transaction transaction;
+    private final List<Scan> readScans = new ArrayList<>();
     private Table sparkTable;
-    private boolean read = false;
-    private boolean write = false;
+    private boolean writeActive = false;
 
     private PinnedTable(Table table) {
       this.original = null;
@@ -282,12 +298,16 @@ public class SparkTransaction
       return sparkTable;
     }
 
-    private void markRead() {
-      this.read = true;
+    private synchronized void recordScanRead(Scan scan) {
+      readScans.add(scan);
     }
 
-    private void markWrite() {
-      this.write = true;
+    private synchronized void activateWrite() {
+      this.writeActive = true;
+    }
+
+    private synchronized boolean writeActive() {
+      return writeActive;
     }
 
     private boolean matches(SparkBatchQueryScan scan) {
@@ -296,8 +316,8 @@ public class SparkTransaction
           && Objects.equals(original.snapshotId(), scan.snapshotId());
     }
 
-    private void validateReadSnapshot() {
-      if (!read || !write || original == null) {
+    private synchronized void validateReadSnapshot() {
+      if (readScans.isEmpty() || !writeActive || original == null) {
         return;
       }
 
