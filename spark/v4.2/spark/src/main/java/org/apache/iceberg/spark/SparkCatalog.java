@@ -58,6 +58,7 @@ import org.apache.iceberg.rest.RESTCatalog;
 import org.apache.iceberg.spark.actions.SparkActions;
 import org.apache.iceberg.spark.source.SparkChangelogTable;
 import org.apache.iceberg.spark.source.SparkTable;
+import org.apache.iceberg.spark.source.SparkTransaction;
 import org.apache.iceberg.spark.source.SparkView;
 import org.apache.iceberg.spark.source.StagedSparkTable;
 import org.apache.iceberg.util.Pair;
@@ -83,7 +84,9 @@ import org.apache.spark.sql.connector.catalog.TableChange.ColumnChange;
 import org.apache.spark.sql.connector.catalog.TableChange.RemoveProperty;
 import org.apache.spark.sql.connector.catalog.TableChange.SetProperty;
 import org.apache.spark.sql.connector.catalog.TableSummary;
+import org.apache.spark.sql.connector.catalog.TransactionalCatalogPlugin;
 import org.apache.spark.sql.connector.catalog.View;
+import org.apache.spark.sql.connector.catalog.transactions.TransactionInfo;
 import org.apache.spark.sql.connector.expressions.Transform;
 import org.apache.spark.sql.types.StructType;
 import org.apache.spark.sql.util.CaseInsensitiveStringMap;
@@ -119,7 +122,7 @@ import org.slf4j.LoggerFactory;
  *
  * <p>
  */
-public class SparkCatalog extends BaseCatalog {
+public class SparkCatalog extends BaseCatalog implements TransactionalCatalogPlugin {
 
   private static final Logger LOG = LoggerFactory.getLogger(SparkCatalog.class);
   private static final Set<String> DEFAULT_NS_KEYS = ImmutableSet.of(TableCatalog.PROP_OWNER);
@@ -180,6 +183,12 @@ public class SparkCatalog extends BaseCatalog {
   @Override
   public Table loadTable(Identifier ident) throws NoSuchTableException {
     return load(ident, null /* no time travel */);
+  }
+
+  @Override
+  public org.apache.spark.sql.connector.catalog.transactions.Transaction beginTransaction(
+      TransactionInfo info) {
+    return new SparkTransaction(this);
   }
 
   @Override

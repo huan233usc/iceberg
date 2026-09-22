@@ -22,6 +22,7 @@ import static org.apache.spark.sql.connector.write.RowLevelOperation.Command.DEL
 import static org.apache.spark.sql.connector.write.RowLevelOperation.Command.UPDATE;
 
 import java.util.List;
+import java.util.function.Consumer;
 import org.apache.iceberg.IsolationLevel;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.Table;
@@ -45,6 +46,8 @@ class SparkCopyOnWriteOperation implements RowLevelOperation {
   private final String branch;
   private final Command command;
   private final IsolationLevel isolationLevel;
+  private final Consumer<Scan> recordScanRead;
+  private final Runnable activateWrite;
 
   // lazy vars
   private ScanBuilder lazyScanBuilder;
@@ -58,12 +61,26 @@ class SparkCopyOnWriteOperation implements RowLevelOperation {
       String branch,
       RowLevelOperationInfo info,
       IsolationLevel isolationLevel) {
+    this(spark, table, snapshot, branch, info, isolationLevel, scan -> {}, () -> {});
+  }
+
+  SparkCopyOnWriteOperation(
+      SparkSession spark,
+      Table table,
+      Snapshot snapshot,
+      String branch,
+      RowLevelOperationInfo info,
+      IsolationLevel isolationLevel,
+      Consumer<Scan> recordScanRead,
+      Runnable activateWrite) {
     this.spark = spark;
     this.table = table;
     this.snapshot = snapshot;
     this.branch = branch;
     this.command = info.command();
     this.isolationLevel = isolationLevel;
+    this.recordScanRead = recordScanRead;
+    this.activateWrite = activateWrite;
   }
 
   @Override
@@ -75,7 +92,8 @@ class SparkCopyOnWriteOperation implements RowLevelOperation {
   public ScanBuilder newScanBuilder(CaseInsensitiveStringMap options) {
     if (lazyScanBuilder == null) {
       lazyScanBuilder =
-          new SparkScanBuilder(spark, table, table.schema(), snapshot, branch, options) {
+          new SparkScanBuilder(
+              spark, table, table.schema(), snapshot, branch, null, options, recordScanRead) {
             @Override
             public Scan build() {
               Scan scan = super.buildCopyOnWriteScan();
@@ -91,6 +109,7 @@ class SparkCopyOnWriteOperation implements RowLevelOperation {
   @Override
   public WriteBuilder newWriteBuilder(LogicalWriteInfo info) {
     if (lazyWriteBuilder == null) {
+      activateWrite.run();
       SparkWriteBuilder writeBuilder = new SparkWriteBuilder(spark, table, branch, info);
       lazyWriteBuilder = writeBuilder.overwriteFiles(configuredScan, command, isolationLevel);
     }

@@ -21,6 +21,7 @@ package org.apache.iceberg.spark.source;
 import java.io.IOException;
 import java.util.List;
 import java.util.Objects;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 import org.apache.iceberg.BaseMetadataTable;
 import org.apache.iceberg.BaseTable;
@@ -77,6 +78,7 @@ public class SparkScanBuilder extends BaseSparkScanBuilder
   private final TimeTravel timeTravel;
   private final Long startSnapshotId;
   private final Long endSnapshotId;
+  private final Consumer<Scan> recordScanRead;
   private Scan localScan;
 
   SparkScanBuilder(SparkSession spark, Table table, CaseInsensitiveStringMap options) {
@@ -108,10 +110,23 @@ public class SparkScanBuilder extends BaseSparkScanBuilder
       String branch,
       TimeTravel timeTravel,
       CaseInsensitiveStringMap options) {
+    this(spark, table, schema, snapshot, branch, timeTravel, options, scan -> {});
+  }
+
+  SparkScanBuilder(
+      SparkSession spark,
+      Table table,
+      Schema schema,
+      Snapshot snapshot,
+      String branch,
+      TimeTravel timeTravel,
+      CaseInsensitiveStringMap options,
+      Consumer<Scan> recordScanRead) {
     super(spark, table, schema, options);
     this.snapshot = snapshot;
     this.branch = branch;
     this.timeTravel = timeTravel;
+    this.recordScanRead = recordScanRead;
     if (Spark3Util.containsIncrementalOptions(options)) {
       Preconditions.checkArgument(timeTravel == null, "Cannot use time travel in incremental scan");
       Pair<Long, Long> boundaries = readConf().incrementalAppendScanBoundaries();
@@ -245,13 +260,17 @@ public class SparkScanBuilder extends BaseSparkScanBuilder
 
   @Override
   public Scan build() {
+    Scan scan;
     if (localScan != null) {
-      return localScan;
+      scan = localScan;
     } else if (startSnapshotId != null) {
-      return buildIncrementalAppendScan();
+      scan = buildIncrementalAppendScan();
     } else {
-      return buildBatchScan();
+      scan = buildBatchScan();
     }
+
+    recordScanRead.accept(scan);
+    return scan;
   }
 
   private Scan buildBatchScan() {
@@ -285,17 +304,20 @@ public class SparkScanBuilder extends BaseSparkScanBuilder
 
   public Scan buildCopyOnWriteScan() {
     Schema projection = projectionWithMetadataColumns();
-    return new SparkCopyOnWriteScan(
-        spark(),
-        table(),
-        schema(),
-        snapshot,
-        branch,
-        buildIcebergBatchScan(projection, true /* ignore residuals */, false /* no stats */),
-        readConf(),
-        projection,
-        filters(),
-        metricsReporter()::scanReport);
+    Scan scan =
+        new SparkCopyOnWriteScan(
+            spark(),
+            table(),
+            schema(),
+            snapshot,
+            branch,
+            buildIcebergBatchScan(projection, true /* ignore residuals */, false /* no stats */),
+            readConf(),
+            projection,
+            filters(),
+            metricsReporter()::scanReport);
+    recordScanRead.accept(scan);
+    return scan;
   }
 
   private CloseableIterable<FileScanTask> planFilesWithStats() {

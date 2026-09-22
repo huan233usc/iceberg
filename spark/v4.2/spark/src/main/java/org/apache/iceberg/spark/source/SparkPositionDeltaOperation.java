@@ -19,6 +19,7 @@
 package org.apache.iceberg.spark.source;
 
 import java.util.List;
+import java.util.function.Consumer;
 import org.apache.iceberg.IsolationLevel;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.Table;
@@ -43,6 +44,8 @@ class SparkPositionDeltaOperation implements RowLevelOperation, SupportsDelta {
   private final String branch;
   private final Command command;
   private final IsolationLevel isolationLevel;
+  private final Consumer<Scan> recordScanRead;
+  private final Runnable activateWrite;
 
   // lazy vars
   private ScanBuilder lazyScanBuilder;
@@ -56,12 +59,26 @@ class SparkPositionDeltaOperation implements RowLevelOperation, SupportsDelta {
       String branch,
       RowLevelOperationInfo info,
       IsolationLevel isolationLevel) {
+    this(spark, table, snapshot, branch, info, isolationLevel, scan -> {}, () -> {});
+  }
+
+  SparkPositionDeltaOperation(
+      SparkSession spark,
+      Table table,
+      Snapshot snapshot,
+      String branch,
+      RowLevelOperationInfo info,
+      IsolationLevel isolationLevel,
+      Consumer<Scan> recordScanRead,
+      Runnable activateWrite) {
     this.spark = spark;
     this.table = table;
     this.snapshot = snapshot;
     this.branch = branch;
     this.command = info.command();
     this.isolationLevel = isolationLevel;
+    this.recordScanRead = recordScanRead;
+    this.activateWrite = activateWrite;
   }
 
   @Override
@@ -73,7 +90,8 @@ class SparkPositionDeltaOperation implements RowLevelOperation, SupportsDelta {
   public ScanBuilder newScanBuilder(CaseInsensitiveStringMap options) {
     if (lazyScanBuilder == null) {
       this.lazyScanBuilder =
-          new SparkScanBuilder(spark, table, table.schema(), snapshot, branch, options) {
+          new SparkScanBuilder(
+              spark, table, table.schema(), snapshot, branch, null, options, recordScanRead) {
             @Override
             public Scan build() {
               Scan scan = super.build();
@@ -89,6 +107,7 @@ class SparkPositionDeltaOperation implements RowLevelOperation, SupportsDelta {
   @Override
   public DeltaWriteBuilder newWriteBuilder(LogicalWriteInfo info) {
     if (lazyWriteBuilder == null) {
+      activateWrite.run();
       // don't validate the scan is not null as if the condition evaluates to false,
       // the optimizer replaces the original scan relation with a local relation
       lazyWriteBuilder =

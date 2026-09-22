@@ -32,11 +32,13 @@ import static org.apache.iceberg.TableProperties.UPDATE_MODE;
 import static org.apache.iceberg.TableProperties.UPDATE_MODE_DEFAULT;
 
 import java.util.Map;
+import java.util.function.Consumer;
 import org.apache.iceberg.IsolationLevel;
 import org.apache.iceberg.RowLevelOperationMode;
 import org.apache.iceberg.Snapshot;
 import org.apache.iceberg.Table;
 import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.connector.read.Scan;
 import org.apache.spark.sql.connector.write.RowLevelOperation;
 import org.apache.spark.sql.connector.write.RowLevelOperation.Command;
 import org.apache.spark.sql.connector.write.RowLevelOperationBuilder;
@@ -51,6 +53,8 @@ class SparkRowLevelOperationBuilder implements RowLevelOperationBuilder {
   private final RowLevelOperationInfo info;
   private final RowLevelOperationMode mode;
   private final IsolationLevel isolationLevel;
+  private final Consumer<Scan> recordScanRead;
+  private final Runnable activateWrite;
 
   SparkRowLevelOperationBuilder(
       SparkSession spark,
@@ -58,11 +62,24 @@ class SparkRowLevelOperationBuilder implements RowLevelOperationBuilder {
       Snapshot snapshot,
       String branch,
       RowLevelOperationInfo info) {
+    this(spark, table, snapshot, branch, info, scan -> {}, () -> {});
+  }
+
+  SparkRowLevelOperationBuilder(
+      SparkSession spark,
+      Table table,
+      Snapshot snapshot,
+      String branch,
+      RowLevelOperationInfo info,
+      Consumer<Scan> recordScanRead,
+      Runnable activateWrite) {
     this.spark = spark;
     this.table = table;
     this.snapshot = snapshot;
     this.branch = branch;
     this.info = info;
+    this.recordScanRead = recordScanRead;
+    this.activateWrite = activateWrite;
     this.mode = mode(table.properties(), info.command());
     this.isolationLevel = isolationLevel(table.properties(), info.command());
   }
@@ -71,9 +88,11 @@ class SparkRowLevelOperationBuilder implements RowLevelOperationBuilder {
   public RowLevelOperation build() {
     return switch (mode) {
       case COPY_ON_WRITE ->
-          new SparkCopyOnWriteOperation(spark, table, snapshot, branch, info, isolationLevel);
+          new SparkCopyOnWriteOperation(
+              spark, table, snapshot, branch, info, isolationLevel, recordScanRead, activateWrite);
       case MERGE_ON_READ ->
-          new SparkPositionDeltaOperation(spark, table, snapshot, branch, info, isolationLevel);
+          new SparkPositionDeltaOperation(
+              spark, table, snapshot, branch, info, isolationLevel, recordScanRead, activateWrite);
     };
   }
 
