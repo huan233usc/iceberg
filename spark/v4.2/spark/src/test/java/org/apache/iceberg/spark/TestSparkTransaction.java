@@ -27,6 +27,7 @@ import org.apache.iceberg.Parameters;
 import org.apache.iceberg.spark.source.SparkTable;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
+import org.apache.spark.sql.catalyst.analysis.NoSuchTableException;
 import org.apache.spark.sql.connector.catalog.Identifier;
 import org.apache.spark.sql.connector.catalog.TableCatalog;
 import org.apache.spark.sql.connector.catalog.TransactionalCatalogPlugin;
@@ -66,7 +67,7 @@ public class TestSparkTransaction extends TestBaseWithCatalog {
   }
 
   @TestTemplate
-  public void testStagesChangesUntilCommit() {
+  public void testStagesChangesUntilCommit() throws NoSuchTableException {
     Transaction transaction = newTransaction();
     SparkTable table = loadTable(transaction);
     DataFile file =
@@ -85,7 +86,7 @@ public class TestSparkTransaction extends TestBaseWithCatalog {
   }
 
   @TestTemplate
-  public void testAbortDiscardsStagedChanges() {
+  public void testAbortDiscardsStagedChanges() throws NoSuchTableException {
     Transaction transaction = newTransaction();
     SparkTable table = loadTable(transaction);
     DataFile file =
@@ -112,7 +113,7 @@ public class TestSparkTransaction extends TestBaseWithCatalog {
   }
 
   @TestTemplate
-  public void testCachedSelfReadAppendRegistersScan() {
+  public void testCachedSelfReadAppendRegistersScan() throws NoSuchTableException {
     sql("INSERT INTO %s VALUES (1, 'a'), (2, 'b')", tableName);
     Dataset<Row> cached = spark.table(tableName).where("id = 1").cache();
     cached.count();
@@ -134,7 +135,7 @@ public class TestSparkTransaction extends TestBaseWithCatalog {
     return catalog.beginTransaction(() -> "test-transaction");
   }
 
-  private SparkTable loadTable(Transaction transaction) {
+  private SparkTable loadTable(Transaction transaction) throws NoSuchTableException {
     TableCatalog transactionCatalog = (TableCatalog) transaction.catalog();
     Identifier sparkIdentifier =
         Identifier.of(tableIdent.namespace().levels(), tableIdent.name());
