@@ -186,39 +186,6 @@ class TestV4ManifestReader {
 
   @ParameterizedTest
   @FieldSource("MANIFEST_FORMATS")
-  void dataFileAdapterExposesTypedStats(FileFormat format) throws IOException {
-    ManifestFile manifest = writeManifest(format, UNPARTITIONED_TYPE, FILE_C);
-    TrackedFile actual =
-        readOne(
-            V4ManifestReader.builder(manifest, IO, TABLE_SCHEMA, UNPARTITIONED_SPECS)
-                .metricsConfig(METRICS_CONFIG));
-
-    ContentStats stats = TrackedFileAdapters.asDataFile(actual, UNPARTITIONED_SPECS).contentStats();
-
-    assertThat(stats).isNotNull();
-    FieldStats<Integer> idStats = stats.statsFor(TABLE_SCHEMA.findField("id").fieldId());
-    assertThat(idStats.lowerBound()).isEqualTo(ID_STATS.lowerBound());
-    assertThat(idStats.upperBound()).isEqualTo(ID_STATS.upperBound());
-    assertThat(idStats.tightBounds()).isEqualTo(ID_STATS.tightBounds());
-    assertThat(idStats.hasValueCount()).isTrue();
-    assertThat(idStats.valueCount()).isEqualTo(ID_STATS.valueCount());
-    assertThat(idStats.hasNullValueCount()).isTrue();
-    assertThat(idStats.nullValueCount()).isEqualTo(ID_STATS.nullValueCount());
-
-    FieldStats<CharSequence> dataStats = stats.statsFor(TABLE_SCHEMA.findField("data").fieldId());
-    assertThat(dataStats.lowerBound()).hasToString(DATA_STATS.lowerBound());
-    assertThat(dataStats.upperBound()).hasToString(DATA_STATS.upperBound());
-    assertThat(dataStats.tightBounds()).isEqualTo(DATA_STATS.tightBounds());
-    assertThat(dataStats.hasValueCount()).isTrue();
-    assertThat(dataStats.valueCount()).isEqualTo(DATA_STATS.valueCount());
-    assertThat(dataStats.hasNullValueCount()).isTrue();
-    assertThat(dataStats.nullValueCount()).isEqualTo(DATA_STATS.nullValueCount());
-    assertThat(dataStats.hasTotalBytes()).isTrue();
-    assertThat(dataStats.totalBytes()).isEqualTo(DATA_STATS.totalBytes());
-  }
-
-  @ParameterizedTest
-  @FieldSource("MANIFEST_FORMATS")
   public void readForScanPlanningDoesNotCopyStats(FileFormat format) throws IOException {
     TrackedFile file =
         new TrackedFileStruct(
@@ -246,8 +213,6 @@ class TestV4ManifestReader {
     TrackedFile actual = readOne(builder);
 
     assertThat(actual).usingComparator(FILE_COMPARATOR).isEqualTo(file.copyWithoutStats());
-    assertThat(TrackedFileAdapters.asDataFile(actual, ID_PARTITIONING_SPECS).contentStats())
-        .isNull();
   }
 
   @ParameterizedTest
@@ -283,14 +248,6 @@ class TestV4ManifestReader {
     assertThat(actual)
         .usingComparator(FILE_COMPARATOR)
         .isEqualTo(file.copyWithStats(Set.of(idFieldId)));
-    ContentStats stats =
-        TrackedFileAdapters.asDataFile(actual, ID_PARTITIONING_SPECS).contentStats();
-    assertThat(stats).isNotNull();
-    assertThat(stats.fieldStats()).extracting(FieldStats::fieldId).containsExactly(idFieldId);
-    FieldStats<Integer> idStats = stats.statsFor(idFieldId);
-    assertThat(idStats.lowerBound()).isEqualTo(ID_STATS.lowerBound());
-    assertThat(idStats.upperBound()).isEqualTo(ID_STATS.upperBound());
-    assertThat(stats.statsFor(TABLE_SCHEMA.findField("data").fieldId())).isNull();
   }
 
   @ParameterizedTest

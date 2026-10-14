@@ -20,7 +20,6 @@ package org.apache.iceberg;
 
 import org.apache.iceberg.types.Types;
 
-/** Typed statistics for a column. */
 public interface FieldStats<T> {
   /** The field ID of the statistic */
   int fieldId();
@@ -79,7 +78,7 @@ public interface FieldStats<T> {
    * The avg value size in memory (uncompressed) in bytes for variable-length types (string, binary,
    * variant, geometry, geography)
    *
-   * @deprecated since 1.13.0, will be removed in 2.0.0; use {@link #totalBytes()} instead.
+   * @deprecated since 1.13.0, will be removed in 1.14.0; use {@link #totalBytes()} instead.
    */
   @Deprecated
   default Integer avgValueSizeInBytes() {

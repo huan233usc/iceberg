@@ -21,7 +21,6 @@ package org.apache.iceberg;
 import java.util.Set;
 import org.apache.iceberg.types.Types;
 
-/** Typed column statistics for the content of a file. */
 public interface ContentStats {
 
   /** Returns an iterable of the {@link FieldStats} held by this container struct */
