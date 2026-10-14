@@ -66,7 +66,7 @@ class GenericDeleteFile extends BaseFile<DeleteFile> implements DeleteFile {
         metrics.nanValueCounts(),
         metrics.lowerBounds(),
         metrics.upperBounds(),
-        metrics.totalBytes(),
+        metrics.avgValueSizes(),
         splitOffsets,
         equalityFieldIds,
         sortOrderId,

@@ -90,6 +90,7 @@ public class DataWriter<T> implements FileWriter<T, DataWriteResult> {
                   EncryptionUtil.setFileLength(keyMetadata, appender.length()))
               .withFileSizeInBytes(appender.length())
               .withMetrics(appender.metrics())
+              .withContentStats(appender.contentStats())
               .withSplitOffsets(appender.splitOffsets())
               .withSortOrder(sortOrder)
               .build();

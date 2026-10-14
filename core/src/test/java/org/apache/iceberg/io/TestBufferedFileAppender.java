@@ -185,6 +185,15 @@ public class TestBufferedFileAppender {
   }
 
   @Test
+  void contentStatsBeforeCloseThrows() throws IOException {
+    try (BufferedFileAppender<Record> appender = createAppender(10)) {
+      assertThatThrownBy(appender::contentStats)
+          .isInstanceOf(IllegalStateException.class)
+          .hasMessage("Cannot return content stats for unclosed appender");
+    }
+  }
+
+  @Test
   public void testAddAfterCloseThrows() throws IOException {
     try (BufferedFileAppender<Record> appender = createAppender(10)) {
       appender.add(createRecord(1L, "a"));
@@ -223,5 +232,6 @@ public class TestBufferedFileAppender {
     assertThat(appender.metrics()).isNotNull();
     assertThat(appender.metrics().recordCount()).isEqualTo(0L);
     assertThat(appender.splitOffsets()).isNull();
+    assertThat(appender.contentStats()).isNull();
   }
 }

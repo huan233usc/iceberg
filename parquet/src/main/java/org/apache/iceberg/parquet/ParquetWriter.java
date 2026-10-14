@@ -24,8 +24,10 @@ import java.io.UncheckedIOException;
 import java.util.List;
 import java.util.Map;
 import java.util.function.BiFunction;
+import org.apache.iceberg.ContentStats;
 import org.apache.iceberg.Metrics;
 import org.apache.iceberg.MetricsConfig;
+import org.apache.iceberg.MetricsUtil;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.io.FileAppender;
 import org.apache.iceberg.io.OutputFile;
@@ -162,6 +164,18 @@ class ParquetWriter<T> implements FileAppender<T>, Closeable {
           schema, parquetSchema, metricsConfig, writer.getFooter(), model.metrics());
     }
     return EMPTY_METRICS;
+  }
+
+  @Override
+  public ContentStats contentStats() {
+    Preconditions.checkState(closed, "Cannot return content stats for unclosed writer");
+    return writer != null
+        ? MetricsUtil.contentStats(
+            schema,
+            metricsConfig,
+            ParquetMetrics.fieldMetrics(
+                schema, parquetSchema, metricsConfig, writer.getFooter(), model.metrics()))
+        : null;
   }
 
   /**

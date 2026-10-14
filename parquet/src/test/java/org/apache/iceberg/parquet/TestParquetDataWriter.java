@@ -27,13 +27,14 @@ import java.nio.ByteBuffer;
 import java.nio.file.Path;
 import java.security.SecureRandom;
 import java.util.List;
-import java.util.Map;
 import java.util.Optional;
 import java.util.Random;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.function.UnaryOperator;
+import org.apache.iceberg.ContentStats;
 import org.apache.iceberg.DataFile;
+import org.apache.iceberg.FieldStats;
 import org.apache.iceberg.FileContent;
 import org.apache.iceberg.FileFormat;
 import org.apache.iceberg.Files;
@@ -115,6 +116,76 @@ public class TestParquetDataWriter {
   }
 
   @Test
+  void contentStatsCarriesTypedBounds() throws IOException {
+    OutputFile file = Files.localOutput(createTempFile(temp));
+    DataWriter<Record> dataWriter =
+        Parquet.writeData(file)
+            .schema(SCHEMA)
+            .createWriterFunc(GenericParquetWriter::create)
+            .withSpec(PartitionSpec.unpartitioned())
+            .build();
+    try (dataWriter) {
+      for (Record record : records) {
+        dataWriter.write(record);
+      }
+    }
+
+    ContentStats stats = dataWriter.toDataFile().contentStats();
+    assertThat(stats.<Long>statsFor(1).lowerBound()).isEqualTo(records.get(0).getField("id"));
+    assertThat(stats.<Long>statsFor(1).upperBound())
+        .isEqualTo(records.get(records.size() - 1).getField("id"));
+    FieldStats<CharSequence> dataStats = stats.statsFor(2);
+    assertThat(dataStats.lowerBound().toString()).isEqualTo(records.get(0).getField("data"));
+    assertThat(dataStats.valueCount()).isEqualTo(records.size());
+    assertThat(dataStats.hasTotalBytes()).isFalse();
+  }
+
+  @Test
+  void metricsModeNoneOmitsContentStats() throws IOException {
+    Table table =
+        TestTables.create(
+            createTempFile(temp), "no_metrics", SCHEMA, PartitionSpec.unpartitioned(), 2);
+    table.updateProperties().set(TableProperties.DEFAULT_WRITE_METRICS_MODE, "none").commit();
+    OutputFile file = Files.localOutput(createTempFile(temp));
+    DataWriter<Record> dataWriter =
+        Parquet.writeData(file)
+            .schema(SCHEMA)
+            .metricsConfig(MetricsConfig.forTable(table))
+            .createWriterFunc(GenericParquetWriter::create)
+            .withSpec(PartitionSpec.unpartitioned())
+            .build();
+    try (dataWriter) {
+      dataWriter.write(records.get(0));
+    }
+
+    assertThat(dataWriter.toDataFile().contentStats()).isNull();
+  }
+
+  @Test
+  void bufferedAppenderForwardsContentStats() throws IOException {
+    OutputFile file = Files.localOutput(createTempFile(temp));
+    FileAppender<Record> delegate =
+        Parquet.write(file).schema(SCHEMA).createWriterFunc(GenericParquetWriter::create).build();
+    BufferedFileAppender<Record> appender = new BufferedFileAppender<>(2, unused -> delegate);
+    DataWriter<Record> dataWriter =
+        new DataWriter<>(
+            appender,
+            FileFormat.PARQUET,
+            file.location(),
+            PartitionSpec.unpartitioned(),
+            null,
+            null);
+    try (dataWriter) {
+      for (Record record : records) {
+        dataWriter.write(record);
+      }
+    }
+
+    assertThat(dataWriter.toDataFile().contentStats().statsFor(2).valueCount())
+        .isEqualTo(records.size());
+  }
+
+  @Test
   public void testGeospatialRoundTrip() throws IOException {
     Schema schema =
         new Schema(
@@ -149,13 +220,14 @@ public class TestParquetDataWriter {
 
     DataFile dataFile = dataWriter.toDataFile();
     assertThat(dataFile.recordCount()).isEqualTo(geoRecords.size());
-    assertThat(dataFile.totalBytes())
-        .containsOnly(Map.entry(2, 2L * geom.remaining()), Map.entry(3, (long) geog.remaining()));
-    assertThat(dataFile.copy().totalBytes()).isEqualTo(dataFile.totalBytes());
-    assertThat(dataFile.copyWithStats(Set.of(2)).totalBytes())
-        .containsOnly(Map.entry(2, 2L * geom.remaining()));
-    assertThat(dataFile.copyWithStats(Set.of(1)).totalBytes()).isNull();
-    assertThat(dataFile.copyWithoutStats().totalBytes()).isNull();
+    assertThat(dataFile.contentStats().statsFor(2).totalBytes()).isEqualTo(2L * geom.remaining());
+    assertThat(dataFile.contentStats().statsFor(3).totalBytes()).isEqualTo(geog.remaining());
+    assertThat(dataFile.copy().contentStats().statsFor(2).totalBytes())
+        .isEqualTo(2L * geom.remaining());
+    assertThat(dataFile.copyWithStats(Set.of(2)).contentStats().statsFor(2).totalBytes())
+        .isEqualTo(2L * geom.remaining());
+    assertThat(dataFile.copyWithStats(Set.of(1)).contentStats().statsFor(2)).isNull();
+    assertThat(dataFile.copyWithoutStats().contentStats()).isNull();
 
     List<Record> writtenRecords;
     try (CloseableIterable<Record> reader =

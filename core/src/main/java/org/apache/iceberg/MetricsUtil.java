@@ -42,10 +42,56 @@ public class MetricsUtil {
   private MetricsUtil() {}
 
   /**
-   * Copies a metrics object without value, NULL and NaN counts or total bytes for given fields.
+   * Creates typed column statistics from field metrics.
    *
-   * @param excludedFieldIds field IDs for which the counts and total bytes must be dropped
-   * @return a new metrics object without counts or total bytes for given fields
+   * @param schema the file schema
+   * @param metricsConfig the metrics configuration
+   * @param fieldMetrics the collected field metrics
+   * @return typed column statistics, or null if no eligible field metrics are available
+   */
+  public static ContentStats contentStats(
+      Schema schema, MetricsConfig metricsConfig, Iterable<FieldMetrics<?>> fieldMetrics) {
+    Preconditions.checkArgument(schema != null, "Invalid schema: null");
+    Preconditions.checkArgument(metricsConfig != null, "Invalid metrics config: null");
+    Preconditions.checkArgument(fieldMetrics != null, "Invalid field metrics: null");
+
+    Map<Integer, String> statsNames = TypeUtil.indexStatsNames(schema.asStruct());
+    Map<Integer, Integer> parents = TypeUtil.indexParents(schema.asStruct());
+    List<Types.NestedField> statsFields = Lists.newArrayList();
+    List<FieldStats<?>> stats = Lists.newArrayList();
+    for (FieldMetrics<?> metrics : fieldMetrics) {
+      int id = metrics.id();
+      Types.NestedField field = schema.findField(id);
+      if (field != null && !inMapOrList(schema, parents, id)) {
+        int baseId = StatsUtil.toBaseId(id);
+        Types.StructType fieldStatsType =
+            StatsUtil.fieldStatsStruct(field.type(), baseId, metricsConfig.columnMode(id));
+        if (fieldStatsType != null) {
+          FieldStatsStruct<?> fieldStats = new FieldStatsStruct<>(fieldStatsType);
+          fieldStats.fromFieldMetrics(metrics);
+          statsFields.add(optional(baseId, statsNames.get(id), fieldStatsType));
+          stats.add(fieldStats);
+        }
+      }
+    }
+
+    if (statsFields.isEmpty()) {
+      return null;
+    }
+
+    ContentStatsStruct contentStats = new ContentStatsStruct(Types.StructType.of(statsFields));
+    for (FieldStats<?> fieldStats : stats) {
+      contentStats.setStats(fieldStats.fieldId(), fieldStats);
+    }
+
+    return contentStats;
+  }
+
+  /**
+   * Copies a metrics object without value, NULL and NaN counts for given fields.
+   *
+   * @param excludedFieldIds field IDs for which the counts must be dropped
+   * @return a new metrics object without counts for given fields
    */
   public static Metrics copyWithoutFieldCounts(Metrics metrics, Set<Integer> excludedFieldIds) {
     return new Metrics(
@@ -56,14 +102,14 @@ public class MetricsUtil {
         copyWithoutKeys(metrics.nanValueCounts(), excludedFieldIds),
         metrics.lowerBounds(),
         metrics.upperBounds(),
-        copyWithoutKeys(metrics.totalBytes(), excludedFieldIds),
+        copyWithoutKeys(metrics.avgValueSizes(), excludedFieldIds),
         metrics.originalTypes());
   }
 
   /**
-   * Copies a metrics object without counts, total bytes, and bounds for given fields.
+   * Copies a metrics object without counts and bounds for given fields.
    *
-   * @param excludedFieldIds field IDs for which the counts, total bytes, and bounds must be dropped
+   * @param excludedFieldIds field IDs for which the counts and bounds must be dropped
    * @return a new metrics object without lower and upper bounds for given fields
    */
   public static Metrics copyWithoutFieldCountsAndBounds(
@@ -76,7 +122,7 @@ public class MetricsUtil {
         copyWithoutKeys(metrics.nanValueCounts(), excludedFieldIds),
         copyWithoutKeys(metrics.lowerBounds(), excludedFieldIds),
         copyWithoutKeys(metrics.upperBounds(), excludedFieldIds),
-        copyWithoutKeys(metrics.totalBytes(), excludedFieldIds),
+        copyWithoutKeys(metrics.avgValueSizes(), excludedFieldIds),
         copyWithoutKeys(metrics.originalTypes(), excludedFieldIds));
   }
 

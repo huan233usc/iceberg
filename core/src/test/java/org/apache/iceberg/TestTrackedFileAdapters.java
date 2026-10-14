@@ -186,7 +186,7 @@ class TestTrackedFileAdapters {
     assertThat(dataFile.nullValueCounts())
         .containsOnly(Map.entry(1, 5L), Map.entry(2, 10L), Map.entry(3, 20L));
     assertThat(dataFile.nanValueCounts()).containsOnly(Map.entry(2, 3L));
-    assertThat(dataFile.totalBytes()).containsOnly(Map.entry(3, 12L));
+    assertThat(dataFile.contentStats().statsFor(3).totalBytes()).isEqualTo(12L);
     assertThat(dataFile.lowerBounds())
         .containsOnly(
             Map.entry(1, Conversions.toByteBuffer(Types.IntegerType.get(), 1)),

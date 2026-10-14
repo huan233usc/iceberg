@@ -21,8 +21,10 @@ package org.apache.iceberg.parquet;
 import java.io.IOException;
 import java.util.List;
 import java.util.stream.Stream;
+import org.apache.iceberg.ContentStats;
 import org.apache.iceberg.Metrics;
 import org.apache.iceberg.MetricsConfig;
+import org.apache.iceberg.MetricsUtil;
 import org.apache.iceberg.Schema;
 import org.apache.iceberg.exceptions.RuntimeIOException;
 import org.apache.iceberg.io.FileAppender;
@@ -65,6 +67,17 @@ public class ParquetWriteAdapter<D> implements FileAppender<D> {
     MessageType messageType = footer.getFileMetaData().getSchema();
     Schema schema = ParquetSchemaUtil.convert(messageType);
     return ParquetMetrics.metrics(schema, messageType, metricsConfig, footer, Stream.empty());
+  }
+
+  @Override
+  public ContentStats contentStats() {
+    Preconditions.checkState(footer != null, "Cannot produce content stats until closed");
+    MessageType messageType = footer.getFileMetaData().getSchema();
+    Schema schema = ParquetSchemaUtil.convert(messageType);
+    return MetricsUtil.contentStats(
+        schema,
+        metricsConfig,
+        ParquetMetrics.fieldMetrics(schema, messageType, metricsConfig, footer, Stream.empty()));
   }
 
   @Override

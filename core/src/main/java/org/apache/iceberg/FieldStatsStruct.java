@@ -22,6 +22,7 @@ import java.io.Serializable;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.List;
+import org.apache.iceberg.geospatial.GeospatialBound;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
@@ -79,7 +80,7 @@ class FieldStatsStruct<T> implements FieldStats<T>, StructLike, Serializable {
     this.totalBytes = toCopy.totalBytes;
   }
 
-  void fromFieldMetrics(FieldMetrics<T> fieldMetrics) {
+  void fromFieldMetrics(FieldMetrics<?> fieldMetrics) {
     Preconditions.checkArgument(
         fieldMetrics.id() == fieldId,
         "Cannot store stats for field ID: %s (expected %s)",
@@ -89,7 +90,7 @@ class FieldStatsStruct<T> implements FieldStats<T>, StructLike, Serializable {
     setLowerBound(fieldMetrics.lowerBound());
     setUpperBound(fieldMetrics.upperBound());
     this.tightBounds = false;
-    this.valueCount = fieldMetrics.valueCount();
+    this.valueCount = fieldMetrics.valueCount() < 0 ? null : fieldMetrics.valueCount();
     this.nullValueCount = fieldMetrics.nullValueCount() < 0 ? null : fieldMetrics.nullValueCount();
     this.nanValueCount = fieldMetrics.nanValueCount() < 0 ? null : fieldMetrics.nanValueCount();
     this.totalBytes = fieldMetrics.totalBytes() < 0 ? null : fieldMetrics.totalBytes();
@@ -101,11 +102,31 @@ class FieldStatsStruct<T> implements FieldStats<T>, StructLike, Serializable {
   }
 
   private void setLowerBound(Object lowerBound) {
-    this.lowerBound = isBinary() ? ByteBuffers.toByteArray((ByteBuffer) lowerBound) : lowerBound;
+    this.lowerBound = storedBound(lowerBound, StatsUtil.LOWER_BOUND_OFFSET);
   }
 
   private void setUpperBound(Object upperBound) {
-    this.upperBound = isBinary() ? ByteBuffers.toByteArray((ByteBuffer) upperBound) : upperBound;
+    this.upperBound = storedBound(upperBound, StatsUtil.UPPER_BOUND_OFFSET);
+  }
+
+  private Object storedBound(Object bound, int offset) {
+    Types.NestedField field = struct.field(StatsUtil.toBaseId(fieldId) + offset);
+    if (field == null) {
+      return null;
+    }
+
+    if (isBinary()) {
+      return ByteBuffers.toByteArray((ByteBuffer) bound);
+    } else if (bound instanceof GeospatialBound geoBound) {
+      PartitionData structBound = new PartitionData(field.type().asStructType());
+      structBound.set(0, geoBound.x());
+      structBound.set(1, geoBound.y());
+      structBound.set(2, geoBound.hasZ() ? geoBound.z() : null);
+      structBound.set(3, geoBound.hasM() ? geoBound.m() : null);
+      return structBound;
+    }
+
+    return bound;
   }
 
   @Override

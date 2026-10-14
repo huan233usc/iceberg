@@ -21,6 +21,7 @@ package org.apache.iceberg.io;
 import java.io.Closeable;
 import java.util.Iterator;
 import java.util.List;
+import org.apache.iceberg.ContentStats;
 import org.apache.iceberg.Metrics;
 
 public interface FileAppender<D> extends Closeable {
@@ -38,6 +39,15 @@ public interface FileAppender<D> extends Closeable {
 
   /** Returns {@link Metrics} for this file. Only valid after the file is closed. */
   Metrics metrics();
+
+  /**
+   * Returns typed column statistics, or null if unavailable. Only valid after the file is closed.
+   *
+   * @return typed column statistics, or null if unavailable
+   */
+  default ContentStats contentStats() {
+    return null;
+  }
 
   /** Returns the length of this file. */
   long length();

@@ -166,9 +166,11 @@ public interface DataFile extends ContentFile<DataFile> {
   }
 
   /**
-   * Returns typed column statistics from a v4 manifest, or null if they are unavailable.
+   * Returns typed column statistics, or null if they are unavailable.
    *
-   * <p>Statistics may be a projection of those stored in the manifest.
+   * <p>Statistics may contain only a subset of the file's columns and metrics.
+   *
+   * @return typed column statistics, or null if unavailable
    */
   default ContentStats contentStats() {
     return null;

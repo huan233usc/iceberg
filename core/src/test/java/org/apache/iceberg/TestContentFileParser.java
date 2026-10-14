@@ -90,7 +90,54 @@ public class TestContentFileParser {
     ContentFile<?> contentFile =
         ContentFileParser.fromJson(jsonNode, Map.of(0, PartitionSpec.unpartitioned()));
     assertThat(contentFile).isInstanceOf(DataFile.class);
-    assertThat(contentFile.totalBytes()).isNull();
+    assertThat(contentFile.avgValueSizes()).isNull();
+    assertThat(((DataFile) contentFile).contentStats()).isNull();
+  }
+
+  @Test
+  void nativeTotalBytesRoundTrip() throws Exception {
+    PartitionSpec spec = PartitionSpec.unpartitioned();
+    Schema schema = new Schema(Types.NestedField.optional(1, "data", Types.StringType.get()));
+    Types.StructType statsType = StatsUtil.statsReadSchema(schema, Collections.singletonList(1));
+    long totalBytes = 2L * Integer.MAX_VALUE + 3L;
+    ContentStatsStruct contentStats = new ContentStatsStruct(statsType);
+    contentStats.setStats(
+        1,
+        new FieldStatsStruct<>(
+            statsType.fields().get(0).type().asStructType(),
+            "a",
+            "z",
+            false,
+            5L,
+            2L,
+            0L,
+            totalBytes));
+    DataFile dataFile =
+        DataFiles.builder(spec)
+            .withPath("/path/to/native-stats.parquet")
+            .withFileSizeInBytes(10)
+            .withRecordCount(5)
+            .withContentStats(contentStats)
+            .build();
+
+    String json = ContentFileParser.toJson(dataFile, spec);
+    DataFile parsed = (DataFile) ContentFileParser.fromJson(JsonUtil.mapper().readTree(json), spec);
+
+    assertThat(parsed.contentStats().statsFor(1).totalBytes()).isEqualTo(totalBytes);
+    assertThat(parsed.contentStats().statsFor(1).valueCount()).isEqualTo(5L);
+    assertThat(parsed.contentStats().statsFor(1).nullValueCount()).isEqualTo(2L);
+    assertThat(parsed.avgValueSizes()).containsEntry(1, Math.toIntExact(totalBytes / 3L));
+    assertContentFileEquals(dataFile, parsed, spec);
+  }
+
+  @Test
+  void legacyAverageSizesDoNotCreateNativeStats() throws Exception {
+    PartitionSpec spec = PartitionSpec.unpartitioned();
+    String json = ContentFileParser.toJson(dataFileWithAllOptional(spec), spec);
+    DataFile parsed = (DataFile) ContentFileParser.fromJson(JsonUtil.mapper().readTree(json), spec);
+
+    assertThat(parsed.avgValueSizes()).containsExactlyInAnyOrderEntriesOf(Map.of(3, 8, 4, 16));
+    assertThat(parsed.contentStats()).isNull();
   }
 
   @Test
@@ -98,7 +145,7 @@ public class TestContentFileParser {
     String jsonStr =
         "{\"spec-id\":0,\"content\":\"data\",\"file-path\":\"/path/to/data.parquet\","
             + "\"file-format\":\"parquet\",\"partition\":[],\"file-size-in-bytes\":10,"
-            + "\"record-count\":1,\"content-stats\":{\"abc\":{\"total-bytes\":8}}}";
+            + "\"record-count\":1,\"content-stats\":{\"abc\":{\"avg-value-size-in-bytes\":8}}}";
     JsonNode jsonNode = JsonUtil.mapper().readTree(jsonStr);
     assertThatThrownBy(
             () -> ContentFileParser.fromJson(jsonNode, Map.of(0, PartitionSpec.unpartitioned())))
@@ -384,7 +431,7 @@ public class TestContentFileParser {
           + "\"nan-value-counts\":{\"keys\":[3,4],\"values\":[0,0]},"
           + "\"lower-bounds\":{\"keys\":[3,4],\"values\":[\"01000000\",\"02000000\"]},"
           + "\"upper-bounds\":{\"keys\":[3,4],\"values\":[\"05000000\",\"0A000000\"]},"
-          + "\"content-stats\":{\"3\":{\"total-bytes\":8},\"4\":{\"total-bytes\":16}},"
+          + "\"content-stats\":{\"3\":{\"avg-value-size-in-bytes\":8},\"4\":{\"avg-value-size-in-bytes\":16}},"
           + "\"key-metadata\":\"00000000000000000000000000000000\","
           + "\"split-offsets\":[128,256],\"sort-order-id\":1}";
     } else {
@@ -396,7 +443,7 @@ public class TestContentFileParser {
           + "\"nan-value-counts\":{\"keys\":[3,4],\"values\":[0,0]},"
           + "\"lower-bounds\":{\"keys\":[3,4],\"values\":[\"01000000\",\"02000000\"]},"
           + "\"upper-bounds\":{\"keys\":[3,4],\"values\":[\"05000000\",\"0A000000\"]},"
-          + "\"content-stats\":{\"3\":{\"total-bytes\":8},\"4\":{\"total-bytes\":16}},"
+          + "\"content-stats\":{\"3\":{\"avg-value-size-in-bytes\":8},\"4\":{\"avg-value-size-in-bytes\":16}},"
           + "\"key-metadata\":\"00000000000000000000000000000000\","
           + "\"split-offsets\":[128,256],\"sort-order-id\":1}";
     }
@@ -423,7 +470,7 @@ public class TestContentFileParser {
                         Conversions.toByteBuffer(Types.IntegerType.get(), 5),
                         4,
                         Conversions.toByteBuffer(Types.IntegerType.get(), 10)), // upper bounds
-                    ImmutableMap.of(3, 8L, 4, 16L), // total bytes
+                    ImmutableMap.of(3, 8, 4, 16), // avg value sizes
                     null /* originalTypes */))
             .withFileSizeInBytes(350)
             .withSplitOffsets(Arrays.asList(128L, 256L))
@@ -564,7 +611,7 @@ public class TestContentFileParser {
                 Conversions.toByteBuffer(Types.IntegerType.get(), 5),
                 4,
                 Conversions.toByteBuffer(Types.IntegerType.get(), 10)), // upper bounds
-            ImmutableMap.of(3, 8L, 4, 16L), // total bytes
+            ImmutableMap.of(3, 8, 4, 16), // avg value sizes
             null /* originalTypes */);
 
     return new GenericDeleteFile(
@@ -604,7 +651,7 @@ public class TestContentFileParser {
           + "\"nan-value-counts\":{\"keys\":[3,4],\"values\":[0,0]},"
           + "\"lower-bounds\":{\"keys\":[3,4],\"values\":[\"01000000\",\"02000000\"]},"
           + "\"upper-bounds\":{\"keys\":[3,4],\"values\":[\"05000000\",\"0A000000\"]},"
-          + "\"content-stats\":{\"3\":{\"total-bytes\":8},\"4\":{\"total-bytes\":16}},"
+          + "\"content-stats\":{\"3\":{\"avg-value-size-in-bytes\":8},\"4\":{\"avg-value-size-in-bytes\":16}},"
           + "\"key-metadata\":\"00000000000000000000000000000000\","
           + "\"split-offsets\":[128],\"equality-ids\":[3],\"sort-order-id\":1}";
     } else {
@@ -616,7 +663,7 @@ public class TestContentFileParser {
           + "\"nan-value-counts\":{\"keys\":[3,4],\"values\":[0,0]},"
           + "\"lower-bounds\":{\"keys\":[3,4],\"values\":[\"01000000\",\"02000000\"]},"
           + "\"upper-bounds\":{\"keys\":[3,4],\"values\":[\"05000000\",\"0A000000\"]},"
-          + "\"content-stats\":{\"3\":{\"total-bytes\":8},\"4\":{\"total-bytes\":16}},"
+          + "\"content-stats\":{\"3\":{\"avg-value-size-in-bytes\":8},\"4\":{\"avg-value-size-in-bytes\":16}},"
           + "\"key-metadata\":\"00000000000000000000000000000000\","
           + "\"split-offsets\":[128],\"equality-ids\":[3],\"sort-order-id\":1}";
     }
@@ -640,7 +687,7 @@ public class TestContentFileParser {
     assertThat(actual.nanValueCounts()).isEqualTo(expected.nanValueCounts());
     assertThat(actual.lowerBounds()).isEqualTo(expected.lowerBounds());
     assertThat(actual.upperBounds()).isEqualTo(expected.upperBounds());
-    assertThat(actual.totalBytes()).isEqualTo(expected.totalBytes());
+    assertThat(actual.avgValueSizes()).isEqualTo(expected.avgValueSizes());
     assertThat(actual.keyMetadata()).isEqualTo(expected.keyMetadata());
     assertThat(actual.splitOffsets()).isEqualTo(expected.splitOffsets());
     assertThat(actual.equalityFieldIds()).isEqualTo(expected.equalityFieldIds());

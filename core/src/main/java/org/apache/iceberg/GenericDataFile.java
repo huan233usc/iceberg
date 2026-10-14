@@ -20,6 +20,7 @@ package org.apache.iceberg;
 
 import java.nio.ByteBuffer;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import org.apache.avro.Schema;
 import org.apache.iceberg.avro.AvroSchemaUtil;
@@ -27,6 +28,8 @@ import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.types.Types;
 
 class GenericDataFile extends BaseFile<DataFile> implements DataFile {
+  private ContentStats contentStats = null;
+
   /** Used by Avro reflection to instantiate this class when reading manifest files. */
   GenericDataFile(Schema avroSchema) {
     super(avroSchema);
@@ -48,6 +51,32 @@ class GenericDataFile extends BaseFile<DataFile> implements DataFile {
       List<Long> splitOffsets,
       Integer sortOrderId,
       Long firstRowId) {
+    this(
+        specId,
+        filePath,
+        format,
+        partition,
+        fileSizeInBytes,
+        metrics,
+        keyMetadata,
+        splitOffsets,
+        sortOrderId,
+        firstRowId,
+        null);
+  }
+
+  GenericDataFile(
+      int specId,
+      String filePath,
+      FileFormat format,
+      PartitionData partition,
+      long fileSizeInBytes,
+      Metrics metrics,
+      ByteBuffer keyMetadata,
+      List<Long> splitOffsets,
+      Integer sortOrderId,
+      Long firstRowId,
+      ContentStats contentStats) {
     super(
         specId,
         FileContent.DATA,
@@ -62,7 +91,7 @@ class GenericDataFile extends BaseFile<DataFile> implements DataFile {
         metrics.nanValueCounts(),
         metrics.lowerBounds(),
         metrics.upperBounds(),
-        metrics.totalBytes(),
+        metrics.avgValueSizes(),
         splitOffsets,
         null /* no equality field IDs */,
         sortOrderId,
@@ -71,6 +100,7 @@ class GenericDataFile extends BaseFile<DataFile> implements DataFile {
         null /* no referenced data file */,
         null /* no content offset */,
         null /* no content size */);
+    this.contentStats = contentStats != null ? contentStats.copy() : null;
   }
 
   /**
@@ -84,10 +114,65 @@ class GenericDataFile extends BaseFile<DataFile> implements DataFile {
   private GenericDataFile(
       GenericDataFile toCopy, boolean copyStats, Set<Integer> requestedColumnIds) {
     super(toCopy, copyStats, requestedColumnIds);
+    if (copyStats && toCopy.contentStats != null) {
+      if (requestedColumnIds == null) {
+        this.contentStats = toCopy.contentStats.copy();
+      } else if (!requestedColumnIds.isEmpty()) {
+        ContentStats projected = toCopy.contentStats.copy(requestedColumnIds);
+        this.contentStats = projected.fieldStats().iterator().hasNext() ? projected : null;
+      }
+    }
   }
 
   /** Constructor for Java serialization. */
   GenericDataFile() {}
+
+  @Override
+  public ContentStats contentStats() {
+    return contentStats;
+  }
+
+  @Override
+  public Map<Integer, Long> valueCounts() {
+    return super.valueCounts() != null
+        ? super.valueCounts()
+        : ContentStatsBackedMap.valueCounts(contentStats);
+  }
+
+  @Override
+  public Map<Integer, Long> nullValueCounts() {
+    return super.nullValueCounts() != null
+        ? super.nullValueCounts()
+        : ContentStatsBackedMap.nullValueCounts(contentStats);
+  }
+
+  @Override
+  public Map<Integer, Long> nanValueCounts() {
+    return super.nanValueCounts() != null
+        ? super.nanValueCounts()
+        : ContentStatsBackedMap.nanValueCounts(contentStats);
+  }
+
+  @Override
+  public Map<Integer, ByteBuffer> lowerBounds() {
+    return super.lowerBounds() != null
+        ? super.lowerBounds()
+        : ContentStatsBackedMap.lowerBounds(contentStats);
+  }
+
+  @Override
+  public Map<Integer, ByteBuffer> upperBounds() {
+    return super.upperBounds() != null
+        ? super.upperBounds()
+        : ContentStatsBackedMap.upperBounds(contentStats);
+  }
+
+  @Override
+  public Map<Integer, Integer> avgValueSizes() {
+    return super.avgValueSizes() != null
+        ? super.avgValueSizes()
+        : ContentStatsBackedMap.avgValueSizes(contentStats);
+  }
 
   @Override
   public DataFile copyWithoutStats() {
