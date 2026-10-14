@@ -166,6 +166,15 @@ public interface DataFile extends ContentFile<DataFile> {
   }
 
   /**
+   * Returns typed column statistics from a v4 manifest, or null if they are unavailable.
+   *
+   * <p>Statistics may be a projection of those stored in the manifest.
+   */
+  default ContentStats contentStats() {
+    return null;
+  }
+
+  /**
    * Returns the deletion vector co-located or tracked with this data file, or null if there isn't
    * one.
    *

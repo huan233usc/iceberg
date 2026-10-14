@@ -26,6 +26,7 @@ import static org.mockito.Mockito.when;
 
 import java.nio.ByteBuffer;
 import java.util.Map;
+import java.util.Set;
 import org.apache.iceberg.mumbling.MumblingTestUtil;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
@@ -177,6 +178,8 @@ class TestTrackedFileAdapters {
     assertThat(dataFile.splitOffsets()).containsExactly(50L, 100L);
     assertThat(dataFile.manifestLocation()).isEqualTo(MANIFEST_LOCATION);
     assertThat(dataFile.deletionVector()).isSameAs(dv);
+    assertThat(dataFile.contentStats()).isSameAs(CONTENT_STATS);
+    assertThat(dataFile.contentStats().statsFor(3).totalBytes()).isEqualTo(GEOM_STATS.totalBytes());
     assertThat(dataFile.equalityFieldIds()).isNull();
     assertThat(dataFile.columnSizes()).isNull();
     assertThat(dataFile.valueCounts())
@@ -292,6 +295,60 @@ class TestTrackedFileAdapters {
   }
 
   @Test
+  void dataFileWithoutContentStats() {
+    DataFile dataFile =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath(DATA_FILE_LOCATION)
+            .withRecordCount(100L)
+            .withFileSizeInBytes(1024L)
+            .build();
+
+    assertThat(dataFile.contentStats()).isNull();
+    assertThat(
+            TrackedFileAdapters.asDataFile(dummyTrackedFile(FileContent.DATA), UNPARTITIONED)
+                .contentStats())
+        .isNull();
+  }
+
+  @Test
+  void dataFileAdapterCopiesContentStats() {
+    DataFile dataFile =
+        TrackedFileAdapters.asDataFile(serializableDataEntry(), specsById(PARTITIONED_SPEC));
+
+    DataFile copy = dataFile.copy();
+    assertThat(copy.contentStats()).isNotSameAs(dataFile.contentStats());
+    assertThat(copy.contentStats())
+        .usingRecursiveComparison()
+        .withEqualsForType(Types.StructType::equals, Types.StructType.class)
+        .isEqualTo(dataFile.contentStats());
+
+    ContentStats projected = dataFile.copyWithStats(Set.of(1)).contentStats();
+    assertThat(projected.<Integer>statsFor(1).lowerBound()).isEqualTo(1);
+    assertThat(projected.statsFor(2)).isNull();
+    assertThat(dataFile.copyWithoutStats().contentStats()).isNull();
+    assertThat(dataFile.copy(false).contentStats()).isNull();
+    assertThat(dataFile.contentStats().statsFor(2)).isNotNull();
+  }
+
+  @Test
+  void delegatingDataFilePreservesContentStats() {
+    DataFile dataFile =
+        TrackedFileAdapters.asDataFile(serializableDataEntry(), specsById(PARTITIONED_SPEC));
+    Delegates.DelegatingDataFile delegate = new Delegates.DelegatingDataFile(dataFile);
+
+    assertThat(delegate.contentStats()).isSameAs(dataFile.contentStats());
+    assertThat(Delegates.suppressFirstRowId(dataFile).contentStats())
+        .isSameAs(dataFile.contentStats());
+
+    DataFile projected = delegate.copyWithStats(Set.of(1));
+    assertThat(projected.contentStats().statsFor(1)).isNotNull();
+    assertThat(projected.contentStats().statsFor(2)).isNull();
+
+    delegate.wrap(dataFile.copyWithoutStats());
+    assertThat(delegate.contentStats()).isNull();
+  }
+
+  @Test
   void dvDeleteFileAdapterIsSerializable() throws Exception {
     DeleteFile dvFile =
         TrackedFileAdapters.asDVDeleteFile(serializableDataEntry(), specsById(PARTITIONED_SPEC));
@@ -317,6 +374,10 @@ class TestTrackedFileAdapters {
     assertThat(actual.manifestLocation()).isEqualTo(expected.manifestLocation());
     assertThat(actual.keyMetadata()).isEqualTo(expected.keyMetadata());
     assertThat(actual.splitOffsets()).isEqualTo(expected.splitOffsets());
+    assertThat(actual.contentStats())
+        .usingRecursiveComparison()
+        .withEqualsForType(Types.StructType::equals, Types.StructType.class)
+        .isEqualTo(expected.contentStats());
   }
 
   private static void assertSameDeleteFile(DeleteFile actual, DeleteFile expected) {
@@ -360,6 +421,23 @@ class TestTrackedFileAdapters {
             .keyMetadata(KEY_METADATA)
             .build();
 
+    ContentStatsStruct stats = new ContentStatsStruct(CONTENT_STATS_TYPE);
+    stats.setStats(
+        1,
+        new FieldStatsStruct<>(
+            CONTENT_STATS_TYPE.fieldType("id").asStructType(), 1, 1000, true, 100L, 5L, 0L, 0L));
+    stats.setStats(
+        2,
+        new FieldStatsStruct<>(
+            CONTENT_STATS_TYPE.fieldType("score").asStructType(),
+            1.0f,
+            100.0f,
+            true,
+            100L,
+            10L,
+            3L,
+            0L));
+
     return new TrackedFileStruct(
         tracking,
         FileContent.DATA,
@@ -369,7 +447,7 @@ class TestTrackedFileAdapters {
         1024L, // fileSizeInBytes
         PARTITIONED_SPEC_ID,
         PARTITION,
-        null, // contentStats
+        stats,
         3, // sortOrderId
         dv, // deletionVector
         null, // manifestInfo
