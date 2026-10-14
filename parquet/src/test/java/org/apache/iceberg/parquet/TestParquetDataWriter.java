@@ -33,7 +33,6 @@ import java.util.Random;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.function.UnaryOperator;
-import org.apache.iceberg.ContentStats;
 import org.apache.iceberg.DataFile;
 import org.apache.iceberg.FileContent;
 import org.apache.iceberg.FileFormat;
@@ -150,8 +149,6 @@ public class TestParquetDataWriter {
 
     DataFile dataFile = dataWriter.toDataFile();
     assertThat(dataFile.recordCount()).isEqualTo(geoRecords.size());
-    assertThat(dataFile.contentStats().statsFor(2).totalBytes()).isEqualTo(2L * geom.remaining());
-    assertThat(dataFile.contentStats().statsFor(3).totalBytes()).isEqualTo(geog.remaining());
     assertThat(dataFile.totalBytes())
         .containsOnly(Map.entry(2, 2L * geom.remaining()), Map.entry(3, (long) geog.remaining()));
     assertThat(dataFile.copy().totalBytes()).isEqualTo(dataFile.totalBytes());
@@ -208,10 +205,6 @@ public class TestParquetDataWriter {
     }
 
     DataFile dataFile = dataWriter.toDataFile();
-    ContentStats stats = dataFile.contentStats();
-    assertThat(stats.<Long>statsFor(1).lowerBound()).isEqualTo(records.get(0).getField("id"));
-    assertThat(stats.<Long>statsFor(1).upperBound())
-        .isEqualTo(records.get(records.size() - 1).getField("id"));
 
     assertThat(dataFile.format()).as("Format should be Parquet").isEqualTo(FileFormat.PARQUET);
     assertThat(dataFile.content()).as("Should be data file").isEqualTo(FileContent.DATA);
@@ -478,7 +471,7 @@ public class TestParquetDataWriter {
     OutputFile outputFile = Files.localOutput(createTempFile(temp));
     ParquetFormatModel<Record, Void, ParquetValueReader<?>> model = variantShreddingModel();
 
-    FileAppender<Record> appender =
+    try (FileAppender<Record> appender =
         model
             .writeBuilder(EncryptedFiles.plainAsEncryptedOutput(outputFile))
             .schema(VARIANT_SHREDDING_SCHEMA)
@@ -487,15 +480,13 @@ public class TestParquetDataWriter {
                     TableProperties.PARQUET_SHRED_VARIANTS, "true",
                     TableProperties.PARQUET_VARIANT_BUFFER_SIZE, "2"))
             .content(FileContent.DATA)
-            .build();
-    try (appender) {
+            .build()) {
       assertThat(appender).isInstanceOf(BufferedFileAppender.class);
       for (Record rec : variantRecords) {
         appender.add(rec);
       }
     }
 
-    assertThat(appender.contentStats().statsFor(1).valueCount()).isEqualTo(variantRecords.size());
     assertShreddedVariant(outputFile, null, 42, "hello");
 
     assertRoundTrip(outputFile, null, null, variantRecords);

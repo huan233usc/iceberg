@@ -27,8 +27,6 @@ import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.types.Types;
 
 class GenericDataFile extends BaseFile<DataFile> implements DataFile {
-  private ContentStats contentStats = null;
-
   /** Used by Avro reflection to instantiate this class when reading manifest files. */
   GenericDataFile(Schema avroSchema) {
     super(avroSchema);
@@ -50,32 +48,6 @@ class GenericDataFile extends BaseFile<DataFile> implements DataFile {
       List<Long> splitOffsets,
       Integer sortOrderId,
       Long firstRowId) {
-    this(
-        specId,
-        filePath,
-        format,
-        partition,
-        fileSizeInBytes,
-        metrics,
-        keyMetadata,
-        splitOffsets,
-        sortOrderId,
-        firstRowId,
-        null);
-  }
-
-  GenericDataFile(
-      int specId,
-      String filePath,
-      FileFormat format,
-      PartitionData partition,
-      long fileSizeInBytes,
-      Metrics metrics,
-      ByteBuffer keyMetadata,
-      List<Long> splitOffsets,
-      Integer sortOrderId,
-      Long firstRowId,
-      ContentStats contentStats) {
     super(
         specId,
         FileContent.DATA,
@@ -99,7 +71,6 @@ class GenericDataFile extends BaseFile<DataFile> implements DataFile {
         null /* no referenced data file */,
         null /* no content offset */,
         null /* no content size */);
-    this.contentStats = contentStats != null ? contentStats.copy() : null;
   }
 
   /**
@@ -113,23 +84,10 @@ class GenericDataFile extends BaseFile<DataFile> implements DataFile {
   private GenericDataFile(
       GenericDataFile toCopy, boolean copyStats, Set<Integer> requestedColumnIds) {
     super(toCopy, copyStats, requestedColumnIds);
-    if (copyStats && toCopy.contentStats != null) {
-      if (requestedColumnIds == null) {
-        this.contentStats = toCopy.contentStats.copy();
-      } else if (!requestedColumnIds.isEmpty()) {
-        ContentStats projected = toCopy.contentStats.copy(requestedColumnIds);
-        this.contentStats = projected.fieldStats().iterator().hasNext() ? projected : null;
-      }
-    }
   }
 
   /** Constructor for Java serialization. */
   GenericDataFile() {}
-
-  @Override
-  public ContentStats contentStats() {
-    return contentStats;
-  }
 
   @Override
   public DataFile copyWithoutStats() {

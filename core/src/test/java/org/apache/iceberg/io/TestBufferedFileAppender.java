@@ -181,9 +181,6 @@ public class TestBufferedFileAppender {
       assertThatThrownBy(appender::metrics)
           .isInstanceOf(IllegalStateException.class)
           .hasMessage("Cannot return metrics for unclosed appender");
-      assertThatThrownBy(appender::contentStats)
-          .isInstanceOf(IllegalStateException.class)
-          .hasMessage("Cannot return content stats for unclosed appender");
     }
   }
 
@@ -226,6 +223,5 @@ public class TestBufferedFileAppender {
     assertThat(appender.metrics()).isNotNull();
     assertThat(appender.metrics().recordCount()).isEqualTo(0L);
     assertThat(appender.splitOffsets()).isNull();
-    assertThat(appender.contentStats()).isNull();
   }
 }

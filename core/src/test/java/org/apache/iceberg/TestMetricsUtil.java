@@ -20,31 +20,11 @@ package org.apache.iceberg;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
-import java.util.List;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableMap;
 import org.apache.iceberg.relocated.com.google.common.collect.ImmutableSet;
-import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.Test;
 
 class TestMetricsUtil {
-
-  @Test
-  void contentStatsPreservesTypedBoundsAndLongByteTotals() {
-    int fieldId = 1;
-    Schema schema = new Schema(Types.NestedField.optional(fieldId, "data", Types.StringType.get()));
-    long totalBytes = Integer.MAX_VALUE + 1L;
-    ContentStats stats =
-        MetricsUtil.contentStats(
-            schema,
-            MetricsConfig.getDefault(),
-            List.of(
-                new FieldMetrics<>(
-                    fieldId, 5L, 1L, -1L, "a", "z", Types.StringType.get(), totalBytes)));
-
-    assertThat(stats.<String>statsFor(fieldId).lowerBound()).isEqualTo("a");
-    assertThat(stats.<String>statsFor(fieldId).upperBound()).isEqualTo("z");
-    assertThat(stats.statsFor(fieldId).totalBytes()).isEqualTo(totalBytes);
-  }
 
   @Test
   void copyWithoutFieldCountsDropsTotalBytesForExcludedFields() {

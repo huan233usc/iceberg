@@ -22,7 +22,6 @@ import java.io.IOException;
 import java.util.List;
 import java.util.function.Function;
 import java.util.function.UnaryOperator;
-import org.apache.iceberg.ContentStats;
 import org.apache.iceberg.Metrics;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
@@ -99,12 +98,6 @@ public class BufferedFileAppender<D> implements FileAppender<D> {
     }
 
     return delegate.metrics();
-  }
-
-  @Override
-  public ContentStats contentStats() {
-    Preconditions.checkState(closed, "Cannot return content stats for unclosed appender");
-    return delegate != null ? delegate.contentStats() : null;
   }
 
   @Override

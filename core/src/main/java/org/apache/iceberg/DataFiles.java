@@ -153,7 +153,6 @@ public class DataFiles {
     private Map<Integer, ByteBuffer> lowerBounds = null;
     private Map<Integer, ByteBuffer> upperBounds = null;
     private Map<Integer, Long> totalBytes = null;
-    private ContentStats contentStats = null;
     private Map<Integer, Type> originalTypes = null;
     private ByteBuffer keyMetadata = null;
     private List<Long> splitOffsets = null;
@@ -182,7 +181,6 @@ public class DataFiles {
       this.lowerBounds = null;
       this.upperBounds = null;
       this.totalBytes = null;
-      this.contentStats = null;
       this.splitOffsets = null;
       this.sortOrderId = SortOrder.unsorted().orderId();
       this.firstRowId = null;
@@ -205,7 +203,6 @@ public class DataFiles {
       this.lowerBounds = toCopy.lowerBounds();
       this.upperBounds = toCopy.upperBounds();
       this.totalBytes = toCopy.totalBytes();
-      this.contentStats = toCopy.contentStats() != null ? toCopy.contentStats().copy() : null;
       this.keyMetadata =
           toCopy.keyMetadata() == null ? null : ByteBuffers.copy(toCopy.keyMetadata());
       this.splitOffsets =
@@ -299,19 +296,7 @@ public class DataFiles {
       this.lowerBounds = metrics.lowerBounds();
       this.upperBounds = metrics.upperBounds();
       this.totalBytes = metrics.totalBytes();
-      this.contentStats = null;
       this.originalTypes = metrics.originalTypes();
-      return this;
-    }
-
-    /**
-     * Sets typed column statistics, or null if unavailable.
-     *
-     * @param stats typed column statistics
-     * @return this for method chaining
-     */
-    public Builder withContentStats(ContentStats stats) {
-      this.contentStats = stats != null ? stats.copy() : null;
       return this;
     }
 
@@ -378,8 +363,7 @@ public class DataFiles {
           keyMetadata,
           splitOffsets,
           sortOrderId,
-          firstRowId,
-          contentStats);
+          firstRowId);
     }
   }
 }

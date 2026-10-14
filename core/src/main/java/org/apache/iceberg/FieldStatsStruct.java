@@ -22,7 +22,6 @@ import java.io.Serializable;
 import java.nio.ByteBuffer;
 import java.util.Arrays;
 import java.util.List;
-import org.apache.iceberg.geospatial.GeospatialBound;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.types.Type;
 import org.apache.iceberg.types.Types;
@@ -80,17 +79,17 @@ class FieldStatsStruct<T> implements FieldStats<T>, StructLike, Serializable {
     this.totalBytes = toCopy.totalBytes;
   }
 
-  void fromFieldMetrics(FieldMetrics<?> fieldMetrics) {
+  void fromFieldMetrics(FieldMetrics<T> fieldMetrics) {
     Preconditions.checkArgument(
         fieldMetrics.id() == fieldId,
         "Cannot store stats for field ID: %s (expected %s)",
         fieldMetrics.id(),
         fieldId);
 
-    setLowerBound(fromMetricBound(fieldMetrics.lowerBound(), StatsUtil.LOWER_BOUND_NAME));
-    setUpperBound(fromMetricBound(fieldMetrics.upperBound(), StatsUtil.UPPER_BOUND_NAME));
+    setLowerBound(fieldMetrics.lowerBound());
+    setUpperBound(fieldMetrics.upperBound());
     this.tightBounds = false;
-    this.valueCount = fieldMetrics.valueCount() < 0 ? null : fieldMetrics.valueCount();
+    this.valueCount = fieldMetrics.valueCount();
     this.nullValueCount = fieldMetrics.nullValueCount() < 0 ? null : fieldMetrics.nullValueCount();
     this.nanValueCount = fieldMetrics.nanValueCount() < 0 ? null : fieldMetrics.nanValueCount();
     this.totalBytes = fieldMetrics.totalBytes() < 0 ? null : fieldMetrics.totalBytes();
@@ -107,24 +106,6 @@ class FieldStatsStruct<T> implements FieldStats<T>, StructLike, Serializable {
 
   private void setUpperBound(Object upperBound) {
     this.upperBound = isBinary() ? ByteBuffers.toByteArray((ByteBuffer) upperBound) : upperBound;
-  }
-
-  private Object fromMetricBound(Object bound, String name) {
-    Type type = struct.fieldType(name);
-    if (type == null) {
-      return null;
-    }
-
-    if (bound instanceof GeospatialBound geoBound) {
-      PartitionData structBound = new PartitionData(type.asStructType());
-      structBound.set(0, geoBound.x());
-      structBound.set(1, geoBound.y());
-      structBound.set(2, geoBound.hasZ() ? geoBound.z() : null);
-      structBound.set(3, geoBound.hasM() ? geoBound.m() : null);
-      return structBound;
-    }
-
-    return bound;
   }
 
   @Override
