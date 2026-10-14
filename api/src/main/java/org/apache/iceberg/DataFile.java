@@ -166,6 +166,17 @@ public interface DataFile extends ContentFile<DataFile> {
   }
 
   /**
+   * Returns typed column statistics, or null if they are unavailable.
+   *
+   * <p>Statistics may contain only a subset of the file's columns and metrics.
+   *
+   * @return typed column statistics, or null if unavailable
+   */
+  default ContentStats contentStats() {
+    return null;
+  }
+
+  /**
    * Returns the deletion vector co-located or tracked with this data file, or null if there isn't
    * one.
    *

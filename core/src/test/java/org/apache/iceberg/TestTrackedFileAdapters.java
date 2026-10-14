@@ -177,6 +177,8 @@ class TestTrackedFileAdapters {
     assertThat(dataFile.splitOffsets()).containsExactly(50L, 100L);
     assertThat(dataFile.manifestLocation()).isEqualTo(MANIFEST_LOCATION);
     assertThat(dataFile.deletionVector()).isSameAs(dv);
+    assertThat(dataFile.contentStats()).isSameAs(CONTENT_STATS);
+    assertThat(Delegates.suppressFirstRowId(dataFile).contentStats()).isSameAs(CONTENT_STATS);
     assertThat(dataFile.equalityFieldIds()).isNull();
     assertThat(dataFile.columnSizes()).isNull();
     assertThat(dataFile.valueCounts())
@@ -289,6 +291,18 @@ class TestTrackedFileAdapters {
 
     assertSameDataFile(TestHelpers.roundTripSerialize(dataFile), dataFile);
     assertSameDataFile(TestHelpers.KryoHelpers.roundTripSerialize(dataFile), dataFile);
+  }
+
+  @Test
+  void dataFileWithoutContentStats() {
+    DataFile dataFile =
+        DataFiles.builder(PartitionSpec.unpartitioned())
+            .withPath(DATA_FILE_LOCATION)
+            .withRecordCount(100L)
+            .withFileSizeInBytes(1024L)
+            .build();
+
+    assertThat(dataFile.contentStats()).isNull();
   }
 
   @Test
@@ -489,6 +503,7 @@ class TestTrackedFileAdapters {
 
     DataFile dataFile = TrackedFileAdapters.asDataFile(file, UNPARTITIONED);
 
+    assertThat(dataFile.contentStats()).isNull();
     assertThat(dataFile.valueCounts()).isNull();
     assertThat(dataFile.nullValueCounts()).isNull();
     assertThat(dataFile.nanValueCounts()).isNull();

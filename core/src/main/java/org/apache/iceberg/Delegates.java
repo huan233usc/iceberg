@@ -79,6 +79,11 @@ class Delegates {
     }
 
     @Override
+    public ContentStats contentStats() {
+      return wrappedAsDataFile.contentStats();
+    }
+
+    @Override
     public DataFile copy() {
       return wrap(wrappedAsDataFile.copy());
     }

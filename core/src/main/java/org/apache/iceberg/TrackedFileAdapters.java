@@ -213,6 +213,11 @@ class TrackedFileAdapters {
     }
 
     @Override
+    public ContentStats contentStats() {
+      return file().contentStats();
+    }
+
+    @Override
     public DeletionVector deletionVector() {
       return file().deletionVector();
     }
