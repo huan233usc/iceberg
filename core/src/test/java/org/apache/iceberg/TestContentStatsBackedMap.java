@@ -29,10 +29,6 @@ import org.apache.iceberg.geospatial.GeospatialBound;
 import org.apache.iceberg.types.Conversions;
 import org.apache.iceberg.types.Types;
 import org.junit.jupiter.api.Test;
-import org.junit.jupiter.params.ParameterizedTest;
-import org.junit.jupiter.params.provider.NullSource;
-import org.junit.jupiter.params.provider.ValueSource;
-import org.mockito.Mockito;
 
 public class TestContentStatsBackedMap {
   private static final Schema SCHEMA =
@@ -85,7 +81,7 @@ public class TestContentStatsBackedMap {
   }
 
   @Test
-  public void averageValueSizesDerivedFromNativeStats() {
+  public void totalBytes() {
     Schema schema = new Schema(optional(4, "str", Types.StringType.get()));
     Types.StructType statsType = StatsUtil.statsReadSchema(schema, List.of(4));
     Types.StructType fieldStatsType = statsType.field("str").type().asStructType();
@@ -93,43 +89,8 @@ public class TestContentStatsBackedMap {
     stats.setStats(
         4, StatsTestUtil.mockFieldStats(fieldStatsType, 4, "a", "z", 10L, 1L, null, 12L));
 
-    Map<Integer, Integer> map = ContentStatsBackedMap.avgValueSizes(stats);
-    assertThat(map).containsOnly(Map.entry(4, Math.toIntExact(12L / (10L - 1L))));
-  }
-
-  @Test
-  @SuppressWarnings("deprecation")
-  void legacyAverageOverridesAreRetained() {
-    Schema schema = new Schema(optional(4, "str", Types.StringType.get()));
-    Types.StructType statsType = StatsUtil.statsReadSchema(schema, List.of(4));
-    FieldStats<?> fieldStats =
-        StatsTestUtil.mockFieldStats(
-            statsType.field("str").type().asStructType(), 4, null, null, null, null, null);
-    Mockito.when(fieldStats.avgValueSizeInBytes()).thenReturn(7);
-    ContentStats stats = StatsTestUtil.contentStats(statsType, fieldStats);
-
-    assertThat(ContentStatsBackedMap.avgValueSizes(stats)).containsOnly(Map.entry(4, 7));
-  }
-
-  @ParameterizedTest
-  @NullSource
-  @ValueSource(longs = 1L)
-  void nativeAverageSizesSkipUnknownCountsAndOverflow(Long valueCount) {
-    Schema schema = new Schema(optional(4, "str", Types.StringType.get()));
-    Types.StructType statsType = StatsUtil.statsReadSchema(schema, List.of(4));
-    FieldStats<?> fieldStats =
-        StatsTestUtil.mockFieldStats(
-            statsType.field("str").type().asStructType(),
-            4,
-            null,
-            null,
-            valueCount,
-            null,
-            null,
-            Integer.MAX_VALUE + 1L);
-    ContentStats stats = StatsTestUtil.contentStats(statsType, fieldStats);
-
-    assertThat(ContentStatsBackedMap.avgValueSizes(stats)).isNull();
+    Map<Integer, Long> map = ContentStatsBackedMap.totalBytes(stats);
+    assertThat(map).containsOnly(Map.entry(4, 12L));
   }
 
   @Test
@@ -293,13 +254,11 @@ public class TestContentStatsBackedMap {
   }
 
   @Test
-  @SuppressWarnings("deprecation")
   public void testFactoryReturnsNullWhenNoColumnTracksMetric() {
-    Mockito.when(ONLY_REQUIRED_STATS.statsFor(1).avgValueSizeInBytes()).thenReturn(null);
     // only a required long column: it tracks neither null_value_count nor nan_value_count
     assertThat(ContentStatsBackedMap.nullValueCounts(ONLY_REQUIRED_STATS)).isNull();
     assertThat(ContentStatsBackedMap.nanValueCounts(ONLY_REQUIRED_STATS)).isNull();
-    assertThat(ContentStatsBackedMap.avgValueSizes(ONLY_REQUIRED_STATS)).isNull();
+    assertThat(ContentStatsBackedMap.totalBytes(ONLY_REQUIRED_STATS)).isNull();
 
     Map<Integer, Long> valueCounts = ContentStatsBackedMap.valueCounts(ONLY_REQUIRED_STATS);
     assertThat(valueCounts).isNotNull().containsOnly(Map.entry(1, 10L));

@@ -124,7 +124,6 @@ class ParquetMetrics {
     return columnSizes;
   }
 
-  @SuppressWarnings("deprecation")
   static Metrics metrics(
       Schema schema,
       MessageType type,
@@ -137,7 +136,7 @@ class ParquetMetrics {
     Map<Integer, Long> valueCounts = Maps.newHashMap();
     Map<Integer, Long> nullValueCounts = Maps.newHashMap();
     Map<Integer, Long> nanValueCounts = Maps.newHashMap();
-    Map<Integer, Integer> avgValueSizes = Maps.newHashMap();
+    Map<Integer, Long> totalBytes = Maps.newHashMap();
     Map<Integer, ByteBuffer> lowerBounds = Maps.newHashMap();
     Map<Integer, ByteBuffer> upperBounds = Maps.newHashMap();
     Map<Integer, org.apache.iceberg.types.Type> originalTypes = Maps.newHashMap();
@@ -160,9 +159,8 @@ class ParquetMetrics {
         nanValueCounts.put(id, metrics.nanValueCount());
       }
 
-      Integer avgValueSize = metrics.avgValueSizeInBytes();
-      if (avgValueSize != null) {
-        avgValueSizes.put(id, avgValueSize);
+      if (metrics.totalBytes() >= 0) {
+        totalBytes.put(id, metrics.totalBytes());
       }
 
       if (metrics.lowerBound() != null) {
@@ -186,7 +184,7 @@ class ParquetMetrics {
         nanValueCounts,
         lowerBounds,
         upperBounds,
-        avgValueSizes.isEmpty() ? null : avgValueSizes,
+        totalBytes.isEmpty() ? null : totalBytes,
         originalTypes);
   }
 

@@ -38,7 +38,7 @@ class ContentStatsBackedMap<V> extends AbstractMap<Integer, V> {
     NAN_VALUE_COUNT,
     LOWER_BOUND,
     UPPER_BOUND,
-    AVG_VALUE_SIZE
+    TOTAL_BYTES
   }
 
   /** Per-column value counts, or null if no column tracks the value count. */
@@ -66,8 +66,9 @@ class ContentStatsBackedMap<V> extends AbstractMap<Integer, V> {
     return viewOrNull(stats, Kind.UPPER_BOUND);
   }
 
-  static Map<Integer, Integer> avgValueSizes(ContentStats stats) {
-    return viewOrNull(stats, Kind.AVG_VALUE_SIZE);
+  /** Per-column total uncompressed size of non-null values, or null if no column tracks it. */
+  static <V> Map<Integer, V> totalBytes(ContentStats stats) {
+    return viewOrNull(stats, Kind.TOTAL_BYTES);
   }
 
   private final ContentStats stats;
@@ -150,7 +151,7 @@ class ContentStatsBackedMap<V> extends AbstractMap<Integer, V> {
       case NAN_VALUE_COUNT -> fieldStats.hasNanValueCount();
       case LOWER_BOUND -> fieldStats.lowerBound() != null;
       case UPPER_BOUND -> fieldStats.upperBound() != null;
-      case AVG_VALUE_SIZE -> averageSize(fieldStats) != null;
+      case TOTAL_BYTES -> fieldStats.hasTotalBytes();
     };
   }
 
@@ -167,30 +168,9 @@ class ContentStatsBackedMap<V> extends AbstractMap<Integer, V> {
           (V) bound(fieldStats, fieldStats.lowerBound(), StatsUtil.LOWER_BOUND_NAME);
       case UPPER_BOUND ->
           (V) bound(fieldStats, fieldStats.upperBound(), StatsUtil.UPPER_BOUND_NAME);
-      case AVG_VALUE_SIZE -> (V) averageSize(fieldStats);
+      case TOTAL_BYTES ->
+          fieldStats.hasTotalBytes() ? (V) Long.valueOf(fieldStats.totalBytes()) : null;
     };
-  }
-
-  @SuppressWarnings("deprecation")
-  private static Integer averageSize(FieldStats<?> stats) {
-    if (!stats.hasTotalBytes()) {
-      return stats.avgValueSizeInBytes();
-    }
-
-    if (!stats.hasValueCount()) {
-      return null;
-    }
-
-    long nonNullValues =
-        stats.valueCount() - (stats.hasNullValueCount() ? stats.nullValueCount() : 0L);
-    if (nonNullValues <= 0) {
-      return null;
-    }
-
-    long averageSize = stats.totalBytes() / nonNullValues;
-    return averageSize >= Integer.MIN_VALUE && averageSize <= Integer.MAX_VALUE
-        ? (int) averageSize
-        : null;
   }
 
   private static ByteBuffer bound(FieldStats<?> fieldStats, Object bound, String boundFieldName) {

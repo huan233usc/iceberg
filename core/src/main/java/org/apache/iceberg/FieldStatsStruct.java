@@ -87,8 +87,8 @@ class FieldStatsStruct<T> implements FieldStats<T>, StructLike, Serializable {
         fieldMetrics.id(),
         fieldId);
 
-    setLowerBound(fieldMetrics.lowerBound());
-    setUpperBound(fieldMetrics.upperBound());
+    setLowerBound(fromMetricBound(fieldMetrics.lowerBound(), StatsUtil.LOWER_BOUND_NAME));
+    setUpperBound(fromMetricBound(fieldMetrics.upperBound(), StatsUtil.UPPER_BOUND_NAME));
     this.tightBounds = false;
     this.valueCount = fieldMetrics.valueCount() < 0 ? null : fieldMetrics.valueCount();
     this.nullValueCount = fieldMetrics.nullValueCount() < 0 ? null : fieldMetrics.nullValueCount();
@@ -102,23 +102,21 @@ class FieldStatsStruct<T> implements FieldStats<T>, StructLike, Serializable {
   }
 
   private void setLowerBound(Object lowerBound) {
-    this.lowerBound = storedBound(lowerBound, StatsUtil.LOWER_BOUND_OFFSET);
+    this.lowerBound = isBinary() ? ByteBuffers.toByteArray((ByteBuffer) lowerBound) : lowerBound;
   }
 
   private void setUpperBound(Object upperBound) {
-    this.upperBound = storedBound(upperBound, StatsUtil.UPPER_BOUND_OFFSET);
+    this.upperBound = isBinary() ? ByteBuffers.toByteArray((ByteBuffer) upperBound) : upperBound;
   }
 
-  private Object storedBound(Object bound, int offset) {
-    Types.NestedField field = struct.field(StatsUtil.toBaseId(fieldId) + offset);
-    if (field == null) {
+  private Object fromMetricBound(Object bound, String name) {
+    Type type = struct.fieldType(name);
+    if (type == null) {
       return null;
     }
 
-    if (isBinary()) {
-      return ByteBuffers.toByteArray((ByteBuffer) bound);
-    } else if (bound instanceof GeospatialBound geoBound) {
-      PartitionData structBound = new PartitionData(field.type().asStructType());
+    if (bound instanceof GeospatialBound geoBound) {
+      PartitionData structBound = new PartitionData(type.asStructType());
       structBound.set(0, geoBound.x());
       structBound.set(1, geoBound.y());
       structBound.set(2, geoBound.hasZ() ? geoBound.z() : null);

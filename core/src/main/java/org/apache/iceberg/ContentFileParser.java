@@ -26,10 +26,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
-import java.util.Set;
-import java.util.TreeSet;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
-import org.apache.iceberg.relocated.com.google.common.collect.Lists;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.types.Types;
 import org.apache.iceberg.util.JsonUtil;
@@ -49,7 +46,6 @@ public class ContentFileParser {
   private static final String LOWER_BOUNDS = "lower-bounds";
   private static final String UPPER_BOUNDS = "upper-bounds";
   private static final String CONTENT_STATS = "content-stats";
-  private static final String AVG_VALUE_SIZE_IN_BYTES = "avg-value-size-in-bytes";
   private static final String TOTAL_BYTES = "total-bytes";
   private static final String KEY_METADATA = "key-metadata";
   private static final String SPLIT_OFFSETS = "split-offsets";
@@ -193,8 +189,7 @@ public class ContentFileParser {
           keyMetadata,
           splitOffsets,
           sortOrderId,
-          firstRowId,
-          contentStatsFromJson(jsonNode, metrics));
+          firstRowId);
     } else {
       return new GenericDeleteFile(
           specId,
@@ -250,62 +245,17 @@ public class ContentFileParser {
       SingleValueParser.toJson(DataFile.UPPER_BOUNDS.type(), contentFile.upperBounds(), generator);
     }
 
-    contentStatsToJson(contentFile, generator);
-  }
-
-  private static void contentStatsToJson(ContentFile<?> contentFile, JsonGenerator generator)
-      throws IOException {
-    Map<Integer, Integer> averageSizes = contentFile.avgValueSizes();
-    ContentStats contentStats =
-        contentFile instanceof DataFile dataFile ? dataFile.contentStats() : null;
-    Set<Integer> fieldIds = contentStatsFieldIds(averageSizes, contentStats);
-
-    if (averageSizes != null || !fieldIds.isEmpty()) {
+    if (contentFile.totalBytes() != null) {
       generator.writeFieldName(CONTENT_STATS);
       generator.writeStartObject();
-      for (int fieldId : fieldIds) {
-        FieldStats<?> fieldStats = contentStats != null ? contentStats.statsFor(fieldId) : null;
-        fieldStatsToJson(fieldId, averageSizes, fieldStats, generator);
+      for (Map.Entry<Integer, Long> entry : contentFile.totalBytes().entrySet()) {
+        generator.writeObjectFieldStart(String.valueOf(entry.getKey()));
+        generator.writeNumberField(TOTAL_BYTES, entry.getValue());
+        generator.writeEndObject();
       }
 
       generator.writeEndObject();
     }
-  }
-
-  private static Set<Integer> contentStatsFieldIds(
-      Map<Integer, Integer> averageSizes, ContentStats contentStats) {
-    Set<Integer> fieldIds = new TreeSet<>();
-    if (averageSizes != null) {
-      fieldIds.addAll(averageSizes.keySet());
-    }
-
-    if (contentStats != null) {
-      for (FieldStats<?> fieldStats : contentStats.fieldStats()) {
-        if (fieldStats != null && fieldStats.hasTotalBytes()) {
-          fieldIds.add(fieldStats.fieldId());
-        }
-      }
-    }
-
-    return fieldIds;
-  }
-
-  private static void fieldStatsToJson(
-      int fieldId,
-      Map<Integer, Integer> averageSizes,
-      FieldStats<?> fieldStats,
-      JsonGenerator generator)
-      throws IOException {
-    generator.writeObjectFieldStart(String.valueOf(fieldId));
-    if (averageSizes != null && averageSizes.containsKey(fieldId)) {
-      generator.writeNumberField(AVG_VALUE_SIZE_IN_BYTES, averageSizes.get(fieldId));
-    }
-
-    if (fieldStats != null && fieldStats.hasTotalBytes()) {
-      generator.writeNumberField(TOTAL_BYTES, fieldStats.totalBytes());
-    }
-
-    generator.writeEndObject();
   }
 
   private static Metrics metricsFromJson(JsonNode jsonNode) {
@@ -355,9 +305,9 @@ public class ContentFileParser {
               SingleValueParser.fromJson(DataFile.UPPER_BOUNDS.type(), jsonNode.get(UPPER_BOUNDS));
     }
 
-    Map<Integer, Integer> averageSizes = null;
+    Map<Integer, Long> totalBytes = null;
     if (jsonNode.hasNonNull(CONTENT_STATS)) {
-      averageSizes = avgValueSizesFromJson(jsonNode.get(CONTENT_STATS));
+      totalBytes = totalBytesFromJson(jsonNode.get(CONTENT_STATS));
     }
 
     return new Metrics(
@@ -368,17 +318,17 @@ public class ContentFileParser {
         nanValueCounts,
         lowerBounds,
         upperBounds,
-        averageSizes,
+        totalBytes,
         null /* originalTypes */);
   }
 
-  private static Map<Integer, Integer> avgValueSizesFromJson(JsonNode contentStats) {
+  private static Map<Integer, Long> totalBytesFromJson(JsonNode contentStats) {
     Preconditions.checkArgument(
         contentStats.isObject(),
         "Invalid JSON node for content stats: non-object (%s)",
         contentStats);
 
-    Map<Integer, Integer> averageSizes = Maps.newHashMap();
+    Map<Integer, Long> fieldIdToTotalBytes = Maps.newHashMap();
     Iterator<String> fieldIds = contentStats.fieldNames();
     while (fieldIds.hasNext()) {
       String fieldId = fieldIds.next();
@@ -388,65 +338,13 @@ public class ContentFileParser {
           "Cannot parse content stats for field %s from non-object: %s",
           fieldId,
           fieldStats);
-      Integer averageSize = JsonUtil.getIntOrNull(AVG_VALUE_SIZE_IN_BYTES, fieldStats);
-      if (averageSize != null) {
-        averageSizes.put(parseFieldId(fieldId), averageSize);
-      }
-    }
-
-    return averageSizes.isEmpty() ? null : averageSizes;
-  }
-
-  private static ContentStats contentStatsFromJson(JsonNode jsonNode, Metrics metrics) {
-    if (!jsonNode.hasNonNull(CONTENT_STATS)) {
-      return null;
-    }
-
-    List<Types.NestedField> fields = Lists.newArrayList();
-    Map<Integer, FieldStats<?>> statsById = Maps.newHashMap();
-    JsonNode contentStats = jsonNode.get(CONTENT_STATS);
-    Iterator<String> fieldIds = contentStats.fieldNames();
-    while (fieldIds.hasNext()) {
-      String id = fieldIds.next();
-      Long totalBytes = JsonUtil.getLongOrNull(TOTAL_BYTES, contentStats.get(id));
+      Long totalBytes = JsonUtil.getLongOrNull(TOTAL_BYTES, fieldStats);
       if (totalBytes != null) {
-        int fieldId = parseFieldId(id);
-        int baseId = StatsUtil.toBaseId(fieldId);
-        Preconditions.checkArgument(baseId >= 0, "Invalid field ID for content stats: %s", id);
-        Types.StructType fieldType =
-            Types.StructType.of(
-                Types.NestedField.optional(
-                    baseId + StatsUtil.VALUE_COUNT_OFFSET, "value_count", Types.LongType.get()),
-                Types.NestedField.optional(
-                    baseId + StatsUtil.NULL_VALUE_COUNT_OFFSET,
-                    "null_value_count",
-                    Types.LongType.get()),
-                Types.NestedField.optional(
-                    baseId + StatsUtil.NAN_VALUE_COUNT_OFFSET,
-                    "nan_value_count",
-                    Types.LongType.get()),
-                Types.NestedField.optional(
-                    baseId + StatsUtil.TOTAL_BYTES_OFFSET, "total_bytes", Types.LongType.get()));
-        FieldStatsStruct<?> fieldStats = new FieldStatsStruct<>(fieldType);
-        fieldStats.set(
-            0, metrics.valueCounts() != null ? metrics.valueCounts().get(fieldId) : null);
-        fieldStats.set(
-            1, metrics.nullValueCounts() != null ? metrics.nullValueCounts().get(fieldId) : null);
-        fieldStats.set(
-            2, metrics.nanValueCounts() != null ? metrics.nanValueCounts().get(fieldId) : null);
-        fieldStats.set(3, totalBytes);
-        fields.add(Types.NestedField.optional(baseId, id, fieldType));
-        statsById.put(fieldId, fieldStats);
+        fieldIdToTotalBytes.put(parseFieldId(fieldId), totalBytes);
       }
     }
 
-    if (fields.isEmpty()) {
-      return null;
-    }
-
-    ContentStatsStruct stats = new ContentStatsStruct(Types.StructType.of(fields));
-    statsById.forEach(stats::setStats);
-    return stats;
+    return fieldIdToTotalBytes.isEmpty() ? null : fieldIdToTotalBytes;
   }
 
   private static int parseFieldId(String fieldId) {

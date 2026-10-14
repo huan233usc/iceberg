@@ -20,7 +20,6 @@ package org.apache.iceberg;
 
 import java.nio.ByteBuffer;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import org.apache.avro.Schema;
 import org.apache.iceberg.avro.AvroSchemaUtil;
@@ -91,7 +90,7 @@ class GenericDataFile extends BaseFile<DataFile> implements DataFile {
         metrics.nanValueCounts(),
         metrics.lowerBounds(),
         metrics.upperBounds(),
-        metrics.avgValueSizes(),
+        metrics.totalBytes(),
         splitOffsets,
         null /* no equality field IDs */,
         sortOrderId,
@@ -130,48 +129,6 @@ class GenericDataFile extends BaseFile<DataFile> implements DataFile {
   @Override
   public ContentStats contentStats() {
     return contentStats;
-  }
-
-  @Override
-  public Map<Integer, Long> valueCounts() {
-    return super.valueCounts() != null
-        ? super.valueCounts()
-        : ContentStatsBackedMap.valueCounts(contentStats);
-  }
-
-  @Override
-  public Map<Integer, Long> nullValueCounts() {
-    return super.nullValueCounts() != null
-        ? super.nullValueCounts()
-        : ContentStatsBackedMap.nullValueCounts(contentStats);
-  }
-
-  @Override
-  public Map<Integer, Long> nanValueCounts() {
-    return super.nanValueCounts() != null
-        ? super.nanValueCounts()
-        : ContentStatsBackedMap.nanValueCounts(contentStats);
-  }
-
-  @Override
-  public Map<Integer, ByteBuffer> lowerBounds() {
-    return super.lowerBounds() != null
-        ? super.lowerBounds()
-        : ContentStatsBackedMap.lowerBounds(contentStats);
-  }
-
-  @Override
-  public Map<Integer, ByteBuffer> upperBounds() {
-    return super.upperBounds() != null
-        ? super.upperBounds()
-        : ContentStatsBackedMap.upperBounds(contentStats);
-  }
-
-  @Override
-  public Map<Integer, Integer> avgValueSizes() {
-    return super.avgValueSizes() != null
-        ? super.avgValueSizes()
-        : ContentStatsBackedMap.avgValueSizes(contentStats);
   }
 
   @Override

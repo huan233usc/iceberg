@@ -31,7 +31,6 @@ import org.apache.iceberg.relocated.com.google.common.collect.ImmutableList;
 import org.apache.iceberg.types.Conversions;
 import org.apache.iceberg.types.Type;
 import org.apache.iceberg.util.ByteBuffers;
-import org.apache.iceberg.util.SerializableMap;
 
 public class DataFiles {
 
@@ -153,7 +152,7 @@ public class DataFiles {
     private Map<Integer, Long> nanValueCounts = null;
     private Map<Integer, ByteBuffer> lowerBounds = null;
     private Map<Integer, ByteBuffer> upperBounds = null;
-    private Map<Integer, Integer> avgValueSizes = null;
+    private Map<Integer, Long> totalBytes = null;
     private ContentStats contentStats = null;
     private Map<Integer, Type> originalTypes = null;
     private ByteBuffer keyMetadata = null;
@@ -182,7 +181,7 @@ public class DataFiles {
       this.nanValueCounts = null;
       this.lowerBounds = null;
       this.upperBounds = null;
-      this.avgValueSizes = null;
+      this.totalBytes = null;
       this.contentStats = null;
       this.splitOffsets = null;
       this.sortOrderId = SortOrder.unsorted().orderId();
@@ -199,13 +198,13 @@ public class DataFiles {
       this.format = toCopy.format();
       this.recordCount = toCopy.recordCount();
       this.fileSizeInBytes = toCopy.fileSizeInBytes();
-      this.columnSizes = copyMap(toCopy.columnSizes());
-      this.valueCounts = copyMap(toCopy.valueCounts());
-      this.nullValueCounts = copyMap(toCopy.nullValueCounts());
-      this.nanValueCounts = copyMap(toCopy.nanValueCounts());
-      this.lowerBounds = copyByteBufferMap(toCopy.lowerBounds());
-      this.upperBounds = copyByteBufferMap(toCopy.upperBounds());
-      this.avgValueSizes = copyMap(toCopy.avgValueSizes());
+      this.columnSizes = toCopy.columnSizes();
+      this.valueCounts = toCopy.valueCounts();
+      this.nullValueCounts = toCopy.nullValueCounts();
+      this.nanValueCounts = toCopy.nanValueCounts();
+      this.lowerBounds = toCopy.lowerBounds();
+      this.upperBounds = toCopy.upperBounds();
+      this.totalBytes = toCopy.totalBytes();
       this.contentStats = toCopy.contentStats() != null ? toCopy.contentStats().copy() : null;
       this.keyMetadata =
           toCopy.keyMetadata() == null ? null : ByteBuffers.copy(toCopy.keyMetadata());
@@ -214,23 +213,6 @@ public class DataFiles {
       this.sortOrderId = toCopy.sortOrderId();
       this.firstRowId = toCopy.firstRowId();
       return this;
-    }
-
-    private static <K, V> Map<K, V> copyMap(Map<K, V> map) {
-      return map != null ? SerializableMap.copyOf(map).immutableMap() : null;
-    }
-
-    private static Map<Integer, ByteBuffer> copyByteBufferMap(Map<Integer, ByteBuffer> map) {
-      if (map == null) {
-        return null;
-      }
-
-      SerializableMap<Integer, ByteBuffer> copy = SerializableMap.copyOf(map);
-      for (Map.Entry<Integer, ByteBuffer> entry : copy.entrySet()) {
-        entry.setValue(ByteBuffers.copy(entry.getValue()));
-      }
-
-      return copy.immutableMap();
     }
 
     public Builder withStatus(FileStatus stat) {
@@ -316,7 +298,7 @@ public class DataFiles {
       this.nanValueCounts = metrics.nanValueCounts();
       this.lowerBounds = metrics.lowerBounds();
       this.upperBounds = metrics.upperBounds();
-      this.avgValueSizes = metrics.avgValueSizes();
+      this.totalBytes = metrics.totalBytes();
       this.contentStats = null;
       this.originalTypes = metrics.originalTypes();
       return this;
@@ -391,7 +373,7 @@ public class DataFiles {
               nanValueCounts,
               lowerBounds,
               upperBounds,
-              avgValueSizes,
+              totalBytes,
               originalTypes),
           keyMetadata,
           splitOffsets,
