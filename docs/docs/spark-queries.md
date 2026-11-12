@@ -107,8 +107,8 @@ when writing filters for queries and row-level operations that align with partit
 
 Native CDC reads use Iceberg snapshot sequence numbers as commit versions. The bounds below
 include commits 20 through 25. Required snapshots and their data files must still be retained.
-The current implementation supports batch reads of copy-on-write changes in format v2 and later;
-streaming reads and delete-file changelog scans are not supported.
+The current implementation supports copy-on-write changes in format v2 and later; delete-file
+changelog scans are not supported.
 
 Without row lineage, raw mode returns all added and removed rows, including unchanged rows
 copied during a file rewrite:
@@ -136,9 +136,23 @@ The native options have the same meaning in SQL and DataFrame reads:
 `dropCarryovers` and `netChanges` require row lineage and support both values of `computeUpdates`.
 Raw mode requires `computeUpdates=false`.
 
+Streaming reads advance at snapshot boundaries. Post-processing requires commit timestamps to
+be nondecreasing within a micro-batch and strictly greater than the previous micro-batch's last
+timestamp. Reads that violate this condition fail rather than allow Spark's watermark to discard
+changes. Streaming `netChanges` applies to the buffered changes; concatenating its output across
+micro-batches need not equal one batch read over the whole history.
+Spark's streaming `netChanges` processor requires
+`spark.sql.streaming.stateStore.providerClass=org.apache.spark.sql.execution.streaming.state.RocksDBStateStoreProvider`.
+On Spark 4.2.0, combining streaming `netChanges` with `computeUpdates=true` also requires
+`spark.sql.legacy.createEmptyCollectionUsingStringType=true` to work around an analyzer type-resolution
+bug. This session setting changes the inferred element types of empty collection literals to string;
+enable it explicitly for the CDC query and restore it afterward if other queries need the default
+empty-collection semantics. Iceberg does not change this setting automatically.
+
 CDC rejects ordinary time-travel options (`versionAsOf`, `timestampAsOf`, and legacy options),
-`branch`, and Iceberg's `start-snapshot-id`/`end-snapshot-id` and `start-timestamp`/`end-timestamp`.
-Use the native CDC range options to select changes.
+`branch`, Iceberg's `start-snapshot-id`/`end-snapshot-id` and `start-timestamp`/`end-timestamp`,
+`stream-from-timestamp`, and the streaming skip-delete/skip-overwrite options. Use the native CDC
+range options to select changes.
 
 ### Time travel Queries with SQL
 Spark supports time travel in SQL queries using `TIMESTAMP AS OF` or `VERSION AS OF` clauses.
