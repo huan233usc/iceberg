@@ -125,7 +125,7 @@ class SparkChangelogScan implements Scan, SupportsReportStatistics {
         hashCode());
   }
 
-  private List<ScanTaskGroup<ChangelogScanTask>> taskGroups() {
+  List<ScanTaskGroup<ChangelogScanTask>> taskGroups() {
     if (taskGroups == null) {
       this.taskGroups = planTaskGroups();
     }
