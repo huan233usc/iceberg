@@ -19,6 +19,7 @@
 package org.apache.iceberg.spark.source;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -30,8 +31,11 @@ import org.apache.iceberg.Table;
 import org.apache.iceberg.relocated.com.google.common.collect.Maps;
 import org.apache.iceberg.spark.CatalogTestBase;
 import org.apache.iceberg.spark.SparkCatalogConfig;
+import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.RowFactory;
+import org.apache.spark.sql.streaming.StreamingQuery;
+import org.apache.spark.sql.streaming.Trigger;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.TestTemplate;
 
@@ -43,11 +47,13 @@ class TestNativeChangelogCatalogs extends CatalogTestBase {
   }
 
   @TestTemplate
-  void routesNativeCopyOnWriteChangesThroughCatalogs() {
-    withSQLConf(Map.of("spark.sql.shuffle.partitions", "4"), this::assertNativeCopyOnWriteChanges);
+  void routesNativeCopyOnWriteChangesThroughCatalogs() throws Exception {
+    withSQLConf(
+        Map.of("spark.sql.shuffle.partitions", "4"),
+        () -> assertThatCode(this::assertNativeCopyOnWriteChanges).doesNotThrowAnyException());
   }
 
-  private void assertNativeCopyOnWriteChanges() {
+  private void assertNativeCopyOnWriteChanges() throws Exception {
     sql(
         "CREATE TABLE %s (id bigint, data string) USING iceberg "
             + "TBLPROPERTIES ('format-version'='3', 'write.update.mode'='copy-on-write')",
@@ -114,6 +120,28 @@ class TestNativeChangelogCatalogs extends CatalogTestBase {
                   .collectAsList())
           .as("%s SQL %s", catalogName, setting)
           .containsExactlyInAnyOrderElementsOf(expected);
+
+      if (setting.equals("updates") || setting.equals("raw")) {
+        Dataset<Row> stream = spark.readStream().options(options).changes(tableName);
+        String checkpoint = temp.resolve(setting + "-checkpoint").toString();
+        String output = temp.resolve(setting + "-output").toString();
+        StreamingQuery query =
+            stream
+                .writeStream()
+                .format("parquet")
+                .option("checkpointLocation", checkpoint)
+                .trigger(Trigger.AvailableNow())
+                .start(output);
+        try {
+          assertThat(query.awaitTermination(60_000)).isTrue();
+        } finally {
+          query.stop();
+        }
+
+        assertThat(spark.read().parquet(output).collectAsList())
+            .as("%s streaming %s", catalogName, setting)
+            .containsExactlyInAnyOrderElementsOf(expected);
+      }
     }
   }
 

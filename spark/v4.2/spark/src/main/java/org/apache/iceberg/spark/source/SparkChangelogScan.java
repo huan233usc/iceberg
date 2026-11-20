@@ -130,7 +130,7 @@ class SparkChangelogScan implements Scan, SupportsReportStatistics {
         readerFactory);
   }
 
-  private List<ScanTaskGroup<ChangelogScanTask>> taskGroups() {
+  List<ScanTaskGroup<ChangelogScanTask>> taskGroups() {
     if (taskGroups == null) {
       try (CloseableIterable<ScanTaskGroup<ChangelogScanTask>> groups =
           TableScanUtil.planTaskGroups(

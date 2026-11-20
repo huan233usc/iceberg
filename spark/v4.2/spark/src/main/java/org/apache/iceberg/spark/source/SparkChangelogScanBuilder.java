@@ -143,15 +143,24 @@ public class SparkChangelogScanBuilder extends BaseSparkScanBuilder
   }
 
   Scan build(ChangelogContext context, Schema outputSchema) {
-    validateVersions(table(), context);
-    Snapshot currentSnapshot = table().currentSnapshot();
-    Long endSnapshotId = currentSnapshot != null ? currentSnapshot.snapshotId() : null;
+    return new SparkChangelogMicroBatchStream.StreamingScan(this, outputSchema, context);
+  }
+
+  SparkChangelogScan build(
+      ChangelogContext context, Schema outputSchema, Long startSnapshotId, Long endSnapshotId) {
+    Preconditions.checkState(
+        startSnapshotId == null
+            || SnapshotUtil.isParentAncestorOf(table(), endSnapshotId, startSnapshotId),
+        "Cannot read CDC: snapshot %s is not an ancestor of %s",
+        startSnapshotId,
+        endSnapshotId);
     PartitionReaderFactory readerFactory = new SparkChangelogRowReader.Factory();
     Snapshot oldest = null;
     Snapshot latest = null;
     Set<Long> excludedSnapshotIds = Sets.newHashSet();
     if (endSnapshotId != null) {
-      for (Snapshot snapshot : SnapshotUtil.ancestorsBetween(table(), endSnapshotId, null)) {
+      for (Snapshot snapshot :
+          SnapshotUtil.ancestorsBetween(table(), endSnapshotId, startSnapshotId)) {
         if (includes(context, snapshot)) {
           validateSnapshot(snapshot, context);
           oldest = snapshot;
@@ -293,7 +302,7 @@ public class SparkChangelogScanBuilder extends BaseSparkScanBuilder
     return context.deduplicationMode() != DeduplicationMode.NONE || context.computeUpdates();
   }
 
-  private static boolean includes(ChangelogContext context, Snapshot snapshot) {
+  static boolean includes(ChangelogContext context, Snapshot snapshot) {
     ChangelogRange range = context.range();
     if (range instanceof ChangelogRange.VersionRange versions) {
       long version = snapshot.sequenceNumber();
@@ -317,7 +326,7 @@ public class SparkChangelogScanBuilder extends BaseSparkScanBuilder
     return true;
   }
 
-  private static void validateVersions(Table table, ChangelogContext context) {
+  static void validateVersions(Table table, ChangelogContext context) {
     if (!(context.range() instanceof ChangelogRange.VersionRange range)) {
       return;
     }
